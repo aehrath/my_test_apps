@@ -42,6 +42,26 @@ class GitHubConfig:
 
 gh = GitHubConfig()
 
+_GH_CONFIG_FILE = Path.home() / '.csv_editor_github.json'
+
+def load_gh_config():
+    """Load persisted GitHub config from disk, if it exists."""
+    try:
+        data = json.loads(_GH_CONFIG_FILE.read_text(encoding='utf-8'))
+        gh.token  = data.get('token',  '')
+        gh.repo   = data.get('repo',   '')
+        gh.branch = data.get('branch', 'main') or 'main'
+        gh.path   = data.get('path',   '')
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+def save_gh_config():
+    """Persist current GitHub config to disk."""
+    _GH_CONFIG_FILE.write_text(
+        json.dumps({'token': gh.token, 'repo': gh.repo, 'branch': gh.branch, 'path': gh.path}),
+        encoding='utf-8',
+    )
+
 
 def _gh_api(method, endpoint, data=None):
     """Call GitHub REST API. Returns (result_dict, error_str)."""
@@ -225,6 +245,27 @@ HTML = r"""<!DOCTYPE html>
   tbody td.cell-modified input { background: transparent; }
   tbody td.cell-modified input:focus { background: #e8f0fe; }
 
+  /* ── Inline diff ── */
+  #diff-banner { display:none; align-items:center; gap:10px; padding:5px 12px;
+    background:#1e3a5f; color:#9fc8f0; font-size:12px; flex-shrink:0; }
+  #diff-banner.open { display:flex; }
+  #diff-banner strong { color:#7ab8e8; font-family:monospace; }
+  #diff-banner .diff-stats { color:#aad; }
+  #diff-banner button { margin-left:auto; background:transparent; border:1px solid #4a6278;
+    color:#9fc8f0; border-radius:3px; padding:1px 10px; cursor:pointer; font-size:11px; }
+  #diff-banner button:hover { background:#2a4a6e; }
+  tbody tr.row-diff-added > td { background:#efffef !important; }
+  tbody tr.row-diff-removed > td { background:#f8f8f8 !important; color:#bbb; pointer-events:none; }
+  tbody tr.row-diff-removed > td.row-num { color:#ddd; }
+  tbody td.cell-diff-changed { background:#fffbe6 !important; box-shadow:inset 3px 0 0 #f0c000; }
+  tbody td.cell-diff-changed input { background:transparent; color:inherit; }
+  tbody td.cell-diff-changed input:focus { background:#fff8d6; }
+  tbody td.cell-diff-changed .old-val {
+    display:block; font-size:10px; color:#aaa; text-decoration:line-through;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    line-height:1.2; margin-top:1px; pointer-events:none;
+  }
+
   /* ── Status bar ── */
   #statusbar {
     flex-shrink: 0;
@@ -394,6 +435,12 @@ HTML = r"""<!DOCTYPE html>
   <span id="filepath-display">Untitled</span>
   <div class="sep"></div>
   <button onclick="toggleGHPanel()" title="GitHub versioning">⎇ GitHub</button>
+</div>
+
+<div id="diff-banner">
+  <span>Comparing with <strong id="diff-banner-label"></strong></span>
+  <span class="diff-stats" id="diff-banner-stats"></span>
+  <button onclick="clearInlineDiff()">✕ Clear diff</button>
 </div>
 
 <div id="table-wrap">
@@ -567,10 +614,41 @@ function renderHeaders() {
 function renderRows() {
   const tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
+
+  // Index incoming (new-in-commit) rows by the current-row index they appear before
+  const incomingBefore = {};
+  if (_inlineDiff) {
+    _inlineDiff.incomingRows.forEach(g => {
+      (incomingBefore[g.beforeCurIdx] = incomingBefore[g.beforeCurIdx] || []).push(g);
+    });
+  }
+
+  function insertIncoming(beforeIdx) {
+    (incomingBefore[beforeIdx] || []).forEach(g => {
+      const tr = document.createElement('tr');
+      tr.className = 'row-diff-added';
+      const rn = document.createElement('td');
+      rn.className = 'row-num';
+      rn.textContent = '+';
+      tr.appendChild(rn);
+      S.headers.forEach(h => {
+        const oi = g.commitH.indexOf(h);
+        const td = document.createElement('td');
+        td.textContent = oi >= 0 ? (g.commitRow[oi] ?? '') : '';
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  insertIncoming(0);
+
   S.rows.forEach((row, r) => {
+    const entry = _inlineDiff ? (_inlineDiff.mapping[r] ?? { type: 'added' }) : null;
     const tr = document.createElement('tr');
     tr.className = r % 2 === 0 ? 'even' : 'odd';
     if (selectedRows.has(r)) tr.classList.add('selected-row');
+    if (entry?.type === 'removed') tr.classList.add('row-diff-removed');
 
     const rn = document.createElement('td');
     rn.className = 'row-num';
@@ -579,7 +657,7 @@ function renderRows() {
     rn.addEventListener('mousedown', (e) => { e.preventDefault(); selectRow(r, e); });
     tr.appendChild(rn);
 
-    S.headers.forEach((_, c) => {
+    S.headers.forEach((h, c) => {
       const td = document.createElement('td');
       const key = `${r},${c}`;
       if (highlightCells.has(key)) td.classList.add('highlight');
@@ -591,9 +669,24 @@ function renderRows() {
       inp.dataset.r = r;
       inp.dataset.c = c;
 
-      // Set initial cell-modified state
-      const bv0 = baselineVal(r, S.headers[c]);
+      // Baseline (unsaved-edit) highlight
+      const bv0 = baselineVal(r, h);
       if (bv0 === undefined || inp.value !== bv0) td.classList.add('cell-modified');
+
+      // Inline diff: show commit value in yellow, strike through current value
+      let oldValLabel = null;
+      if (entry?.type === 'changed') {
+        const oi = _inlineDiff.commitH.indexOf(h);
+        const commitVal = oi >= 0 ? (entry.commitRow[oi] ?? '') : '';
+        const curVal = row[c] ?? '';
+        if (curVal !== commitVal) {
+          td.classList.add('cell-diff-changed');
+          inp.value = commitVal;
+          oldValLabel = document.createElement('span');
+          oldValLabel.className = 'old-val';
+          oldValLabel.textContent = curVal;
+        }
+      }
 
       td.addEventListener('mousedown', (e) => { _pendingMouseEvent = e; });
       inp.addEventListener('focus', () => {
@@ -603,16 +696,24 @@ function renderRows() {
       inp.addEventListener('input', () => {
         S.rows[r][c] = inp.value;
         markModified();
-        // Instant per-cell diff highlight — no re-render needed
-        const bv = baselineVal(r, S.headers[c]);
+        const bv = baselineVal(r, h);
         td.classList.toggle('cell-modified', bv === undefined || inp.value !== bv);
+        if (entry?.type === 'changed') {
+          const oi = _inlineDiff.commitH.indexOf(h);
+          const commitVal = oi >= 0 ? (entry.commitRow[oi] ?? '') : '';
+          const changed = inp.value !== commitVal;
+          td.classList.toggle('cell-diff-changed', changed);
+          if (oldValLabel) oldValLabel.style.display = changed ? '' : 'none';
+        }
       });
       inp.addEventListener('keydown', onCellKeyDown);
       td.appendChild(inp);
+      if (oldValLabel) td.appendChild(oldValLabel);
       tr.appendChild(td);
     });
 
     tbody.appendChild(tr);
+    insertIncoming(r + 1);
   });
 }
 
@@ -1064,19 +1165,57 @@ async function doCommit() {
   }
 }
 
-// ── Diff engine ─────────────────────────────────────────────────────────────
+// ── Inline diff engine ──────────────────────────────────────────────────────
+
+// _inlineDiff: null | { sha, label, commitH, commitR, mapping, incomingRows }
+// mapping[curRowIdx]: { type: 'same'|'changed'|'removed', commitRow? }
+//   same    – row unchanged; no highlight
+//   changed – row modified; commitRow has the incoming values
+//   removed – row exists in current but not in commit; shown as ghost
+// incomingRows: [{ beforeCurIdx, commitH, commitRow }]
+//   rows that exist in commit but not in current; shown in green between current rows
+let _inlineDiff = null;
+
+function buildInlineDiffMapping(curH, curR, commitH, commitR) {
+  // Diff current→commit: + means new in commit, - means removed from commit (ghost)
+  const ops = computeDiff(curR, commitR);
+  const mapping = [], incomingRows = [];
+  let curIdx = 0;
+  ops.forEach(op => {
+    if      (op.t === '=') { mapping.push({ type: 'same',    commitRow: op.n }); curIdx++; }
+    else if (op.t === '-') { mapping.push({ type: 'removed'                  }); curIdx++; }
+    else if (op.t === '+') { incomingRows.push({ beforeCurIdx: curIdx, commitH, commitRow: op.n }); }
+    else if (op.t === '~') { mapping.push({ type: 'changed',  commitRow: op.n }); curIdx++; }
+  });
+  return { mapping, incomingRows };
+}
 
 async function showDiff(sha, label) {
   const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
   if (data.error) { alert('Could not fetch version: ' + data.error); return; }
 
-  const { headers: oldH, rows: oldR } = parseCSV(data.content);
-  _diffVersion = { sha, headers: oldH, rows: oldR };
+  const { headers: commitH, rows: commitR } = parseCSV(data.content);
+  _diffVersion = { sha, headers: commitH, rows: commitR };
 
-  document.getElementById('diff-title').textContent =
-    `${sha.slice(0,7)}: "${label}"  →  current editor`;
-  renderDiff(oldH, oldR, S.headers, S.rows);
-  document.getElementById('diff-overlay').classList.add('open');
+  const { mapping, incomingRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
+  _inlineDiff = { sha, label, commitH, commitR, mapping, incomingRows };
+
+  const added   = incomingRows.length;
+  const removed = mapping.filter(m => m.type === 'removed').length;
+  const changed = mapping.filter(m => m.type === 'changed').length;
+  document.getElementById('diff-banner-label').textContent = sha.slice(0, 7) + (label ? ` "${label}"` : '');
+  document.getElementById('diff-banner-stats').textContent =
+    [added && `${added} added`, removed && `${removed} removed`, changed && `${changed} modified`]
+      .filter(Boolean).join(' · ') || 'no changes';
+  document.getElementById('diff-banner').classList.add('open');
+
+  render();
+}
+
+function clearInlineDiff() {
+  _inlineDiff = null;
+  document.getElementById('diff-banner').classList.remove('open');
+  render();
 }
 
 function closeDiff() {
@@ -1148,13 +1287,57 @@ function computeDiff(oldR, newR) {
       { ops.unshift({t:'-', o:oldR[i-1]}); i--; }
   }
 
-  // Pair adjacent - + as modified
+  // Pair consecutive runs of - and + using similarity matching, then emit in
+  // commit order so incoming (+) rows land at the correct position between pairs.
   const result = []; let k = 0;
   while (k < ops.length) {
-    if (ops[k].t === '-' && k+1 < ops.length && ops[k+1].t === '+')
-      { result.push({t:'~', o:ops[k].o, n:ops[k+1].n}); k += 2; }
-    else
-      { result.push(ops[k]); k++; }
+    if (ops[k].t === '-') {
+      const dels = [], adds = [];
+      while (k < ops.length && ops[k].t === '-') dels.push(ops[k++]);
+      while (k < ops.length && ops[k].t === '+') adds.push(ops[k++]);
+
+      // Similarity-based matching: pair each del with its most similar add
+      function cellSim(r1, r2) {
+        let m = 0;
+        for (let i = 0; i < Math.min(r1.length, r2.length); i++)
+          if ((r1[i] ?? '') === (r2[i] ?? '')) m++;
+        return m;
+      }
+      const usedAdd = new Set();
+      const pairedAdd = new Array(dels.length).fill(-1); // pairedAdd[d] = add index
+      dels.forEach((del, d) => {
+        let bestA = -1, bestSim = 0;
+        adds.forEach((add, a) => {
+          if (usedAdd.has(a)) return;
+          const s = cellSim(del.o, add.n);
+          if (s > bestSim) { bestSim = s; bestA = a; }
+        });
+        if (bestA >= 0) { pairedAdd[d] = bestA; usedAdd.add(bestA); }
+      });
+
+      // Reverse map: add index → del index
+      const delForAdd = new Map();
+      pairedAdd.forEach((a, d) => { if (a >= 0) delForAdd.set(a, d); });
+
+      // Emit in commit order (iterate adds), interleaving unpaired dels at the
+      // right current-row position so incoming rows get the correct beforeCurIdx.
+      let nextDel = 0;
+      adds.forEach((add, a) => {
+        if (delForAdd.has(a)) {
+          const d = delForAdd.get(a);
+          // Emit any unpaired dels that come before this paired del (current order)
+          while (nextDel < d) result.push(dels[nextDel++]);
+          result.push({ t:'~', o:dels[d].o, n:add.n });
+          nextDel = d + 1;
+        } else {
+          result.push(add); // truly new row
+        }
+      });
+      // Emit remaining unpaired dels (truly deleted)
+      while (nextDel < dels.length) result.push(dels[nextDel++]);
+    } else {
+      result.push(ops[k++]);
+    }
   }
   return result;
 }
@@ -1375,6 +1558,7 @@ class Handler(BaseHTTPRequestHandler):
             gh.repo   = data.get('repo',   gh.repo).strip()
             gh.branch = data.get('branch', gh.branch).strip() or 'main'
             gh.path   = data.get('path',   gh.path).strip().lstrip('/')
+            save_gh_config()
             self._json({'ok': True})
 
         elif self.path == '/api/github/commit':
@@ -1437,6 +1621,8 @@ class Handler(BaseHTTPRequestHandler):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
+    load_gh_config()
+
     # Optionally load a CSV passed as a CLI argument
     if len(sys.argv) > 1:
         path = Path(sys.argv[1]).expanduser().resolve()
