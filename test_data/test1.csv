@@ -1,6 +1,7 @@
 Item Type,Item Name,Item Variation,SKU,Category,Items Sold,Gross Sales,Items Refunded,Refunds,Discounts & Comps,Net Sales,Tax,Unit,Units Sold,Units Refunded,GTIN
-Physical Good,Baseball Hat Black Customized,Regular,"",Uncategorized,123,$984.00,0,$0.00,$0.00,$984.00,$0.00,ea,123,0,""
-Physical Good,Pen Customized,Regular,"",Uncategorized,284,$263.80,0,$0.00,$0.00,$263.80,$0.00,ea,284,0,""
-Physical Good,Bottle Opener Stainless Steel Customized,"2-Sided, Color Engraved","",Bottle Openers,50,$125.00,0,$0.00,$0.00,$125.00,$0.00,ea,50,0,""
-Physical Good,Bottle Opener Stainless Steel Customized,Regular,"",Bottle Openers,16,$24.00,0,$0.00,$0.00,$24.00,$0.00,ea,16,0,""
-Physical Good,Customized Wooden Wallclock,Regular,"",Wallclocks,1,$140.00,0,$0.00,-$40.00,$100.00,$7.75,ea,1,0,""
+Physical Good,Baseball Hat Black Customized,Regular,,Uncategorized,123,$984.00,0,$0.00,$0.00,$984.00,$0.00,ea,123,0,
+Physical Good,Pen Customized,Regular,,Uncategorized,284,$263.80,0,$0.00,$0.00,$263.80,$0.00,ea,284,0,
+Physical Good,Bottle Opener Stainless Steel Customized,"2-Sided, Color Engraved",,Bottle Openers,50,$125.0ew0,0,$0.00,$0.00,$125.00,$0.00,ea,50,0,
+Physical Good,Bottle Opener Stainless Steel Customized,Regular,,Bottle ewwOpeners,16,$24.00ew,0,$0.00,$0.00,$24.00,$0.00,ea,16,0,
+Physical Good,Customized Wooden Walewewlclock,Regular,,Wallclocks,1,$140.00ew,0,$0.00,-$40.00,$100.00,$7.75,ea,1,0,
+od,sds,dsdw,,,,ewew,eww,ew,,,,,,,
