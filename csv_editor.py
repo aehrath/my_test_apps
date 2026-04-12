@@ -1111,9 +1111,17 @@ function openFile() {
     const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
     let body;
     if (isXlsx) {
-      const buf = await file.arrayBuffer();
-      const wb  = new ExcelJS.Workbook();
-      await wb.xlsx.load(buf);
+      let wb;
+      try {
+        const buf = await file.arrayBuffer();
+        wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(buf);
+        console.log('[open] ExcelJS loaded, sheets:', wb.worksheets.map(w => w.name));
+      } catch(err) {
+        console.error('[open] ExcelJS load error:', err);
+        alert('Failed to parse Excel file: ' + err.message);
+        return;
+      }
       _xlsxWb = wb;  // keep for style-preserving save
 
       // Recursively unwrap any ExcelJS cell value to a plain string
@@ -1198,14 +1206,18 @@ function openFile() {
       const content = await file.text();
       body = JSON.stringify({ content, filename: file.name, format: 'csv' });
     }
+    console.log('[open] body size:', body.length, 'isXlsx:', isXlsx);
     const res  = await fetch('/api/load-content', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body
     });
+    console.log('[open] response status:', res.status);
     const json = await res.json();
+    console.log('[open] response json:', json);
     if (json.ok) {
       S = await fetch('/api/data').then(r => r.json());
+      console.log('[open] S.headers:', S.headers, 'S.rows.length:', S.rows.length);
       if (isXlsx) {
         _cellStyles = { headerStyles: sheets[0].headerStyles || [], rowStyles: sheets[0].rowStyles || [] };
       } else {
