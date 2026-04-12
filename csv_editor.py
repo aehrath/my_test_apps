@@ -1778,9 +1778,12 @@ function parseCSV(text) {
 // LCS-based row diff
 function computeDiff(oldR, newR) {
   const n = oldR.length, m = newR.length;
+  // Normalize rows before keying: trim trailing empty cells and coerce null→''
+  // so that ["A","B","",""] and ["A","B"] compare as equal (xlsx writers omit trailing empties)
+  const normRow = r => { const a = r.map(v => (v == null ? '' : String(v))); while (a.length && a[a.length-1] === '') a.pop(); return a; };
   // Pre-compute keys once — avoids O(n×m) repeated JSON.stringify calls in the DP loop
-  const oldK = oldR.map(r => JSON.stringify(r));
-  const newK = newR.map(r => JSON.stringify(r));
+  const oldK = oldR.map(r => JSON.stringify(normRow(r)));
+  const newK = newR.map(r => JSON.stringify(normRow(r)));
   const dp = Array.from({length: n+1}, () => new Int32Array(m+1));
   for (let i = 1; i <= n; i++)
     for (let j = 1; j <= m; j++)
