@@ -1545,9 +1545,21 @@ async function doCommit() {
   if (!msg) { alert('Enter a commit message.'); return; }
   await syncNow();
   setStatus('gh-commit-status', 'Pushing…', '');
+  const payload = { message: msg };
+  // For xlsx files, build the workbook in the browser and send as base64
+  const isXlsx = (S.filepath || '').toLowerCase().endsWith('.xlsx') || S.filetype === 'xlsx';
+  if (isXlsx) {
+    try {
+      const buf = await _buildXlsxBytes();
+      const u8  = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+      payload.xlsxB64 = btoa(bin);
+    } catch(err) { setStatus('gh-commit-status', '✗ ' + err.message, 'err'); return; }
+  }
   const data = await fetch('/api/github/commit', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ message: msg })
+    body: JSON.stringify(payload)
   }).then(r => r.json());
   if (data.error) {
     setStatus('gh-commit-status', '✗ ' + data.error, 'err');
@@ -2155,12 +2167,10 @@ class Handler(BaseHTTPRequestHandler):
             file_sha = existing.get('sha') if isinstance(existing, dict) else None
             # Encode content based on current filetype
             if state.filetype == 'xlsx':
-                if not _XLSX_OK:
-                    self._json({'error': 'openpyxl not installed — run: pip install openpyxl'}); return
-                try:
-                    encoded = base64.b64encode(_write_xlsx(state.headers, state.rows)).decode()
-                except Exception as e:
-                    self._json({'error': str(e)}); return
+                xlsx_b64 = data.get('xlsxB64', '')
+                if not xlsx_b64:
+                    self._json({'error': 'xlsx bytes missing from request'}); return
+                encoded = xlsx_b64  # already base64 from browser
             else:
                 buf = io.StringIO()
                 csv.writer(buf).writerow(state.headers)
