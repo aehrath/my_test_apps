@@ -1092,17 +1092,33 @@ function openFile() {
       const wb  = new ExcelJS.Workbook();
       await wb.xlsx.load(buf);
       _xlsxWb = wb;  // keep for style-preserving save
+
+      // Recursively unwrap any ExcelJS cell value to a plain string
       const fmt = v => {
         if (v === null || v === undefined) return '';
         if (v instanceof Date) return v.toISOString().slice(0, 10);
-        if (typeof v === 'object' && v.richText) return v.richText.map(r => r.text).join('');
+        if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+        if (typeof v === 'object') {
+          if (v.richText)  return v.richText.map(r => r.text).join('');  // rich text
+          if ('result' in v) return fmt(v.result);   // formula cell — use cached result
+          return '';
+        }
         if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v);
         return String(v);
       };
+
       const sheets = wb.worksheets.map(ws => {
+        // Find actual column count across all rows
+        let maxCol = 0;
+        ws.eachRow(row => { if (row.cellCount > maxCol) maxCol = row.cellCount; });
+
         const rows2d = [];
         ws.eachRow({ includeEmpty: true }, row => {
-          rows2d.push(row.values.slice(1).map(fmt));
+          // row.values is 1-indexed sparse — iterate by index to preserve column positions
+          const cells = [];
+          for (let c = 1; c <= maxCol; c++)
+            cells.push(fmt(row.getCell(c).value));
+          rows2d.push(cells);
         });
         // Trim trailing blank rows
         while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
