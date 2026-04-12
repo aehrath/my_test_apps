@@ -1190,7 +1190,9 @@ function openFile() {
         const rows    = rows2d.slice(1);
         return { name: ws.name, headers, rows, headerStyles: styles2d[0] || [], rowStyles: styles2d.slice(1) };
       });
-      body = JSON.stringify({ sheets, filename: file.name, format: 'xlsx' });
+      // Send only data to server (no styles — keep payload small)
+      const sheetsData = sheets.map(sh => ({ name: sh.name, headers: sh.headers, rows: sh.rows }));
+      body = JSON.stringify({ sheets: sheetsData, filename: file.name, format: 'xlsx' });
     } else {
       _xlsxWb = null;
       const content = await file.text();
