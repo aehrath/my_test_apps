@@ -1814,6 +1814,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length) if length else b'{}'
+        # Binary endpoints must be handled before JSON parsing
+        if self.path.startswith('/api/save-xlsx'):
+            qs       = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            filepath = qs.get('filepath', [''])[0] or state.filepath or ''
+            if not filepath:
+                self._json({'ok': False, 'error': 'no_path'}); return
+            if '/' not in filepath and '\\' not in filepath:
+                filepath = str(Path.cwd() / filepath)
+            try:
+                if not body:
+                    self._json({'ok': False, 'error': 'no data received'}); return
+                p = Path(filepath)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(body)
+                state.filepath = filepath
+                state.filetype = 'xlsx'
+                self._json({'ok': True, 'filepath': filepath})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+            return
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
@@ -1848,25 +1868,6 @@ class Handler(BaseHTTPRequestHandler):
                 state.filetype     = 'csv'
             state.filepath = filename
             self._json({'ok': True})
-
-        elif self.path.startswith('/api/save-xlsx'):
-            qs       = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            filepath = qs.get('filepath', [''])[0] or state.filepath or ''
-            if not filepath:
-                self._json({'ok': False, 'error': 'no_path'}); return
-            if '/' not in filepath and '\\' not in filepath:
-                filepath = str(Path.cwd() / filepath)
-            try:
-                if not body:
-                    self._json({'ok': False, 'error': 'no data received'}); return
-                p = Path(filepath)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_bytes(body)   # body is raw xlsx bytes (octet-stream)
-                state.filepath = filepath
-                state.filetype = 'xlsx'
-                self._json({'ok': True, 'filepath': filepath})
-            except Exception as e:
-                self._json({'ok': False, 'error': str(e)})
 
         elif self.path == '/api/update':
             state.headers = data.get('headers', state.headers)
