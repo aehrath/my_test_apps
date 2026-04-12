@@ -1351,8 +1351,9 @@ async function _buildXlsxBytes() {
         row.forEach((val, ci) => {
           const cell = ws.getCell(ri + 1, ci + 1);
           // Update value only — cell.style is untouched so fill/font are preserved
-          const num = val !== '' && val !== null && !isNaN(val) && val.trim() !== '';
-          cell.value = num ? Number(val) : (val === '' ? null : val);
+          // Only coerce to number if round-tripping is lossless: "0805" → 805 → "805" ≠ "0805" → keep string
+          const n = val === '' || val == null ? null : Number(val);
+          cell.value = (n != null && !isNaN(n) && String(n) === val.trim()) ? n : (val === '' ? null : val);
         });
         // Clear any cells beyond the new column count (deleted columns)
         const oldColCount = ws.getRow(ri + 1).cellCount;
