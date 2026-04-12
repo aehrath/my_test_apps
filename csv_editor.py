@@ -1137,13 +1137,12 @@ function _u8ToBase64(u8) {
 }
 
 async function _buildXlsxBytes() {
-  // Use current in-memory S.sheets (always up to date — no server round-trip needed)
-  const wb = XLSX.utils.book_new();
-  (S.sheets || [{ name: 'Sheet1', headers: S.headers, rows: S.rows }]).forEach((sh, i) => {
-    // For the active sheet, use live S.headers/S.rows (may have unsaved edits)
-    const headers = (i === (S.activeSheet ?? 0)) ? S.headers : sh.headers;
-    const rows    = (i === (S.activeSheet ?? 0)) ? S.rows    : sh.rows;
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  // syncNow flushes active sheet edits to server, then all-sheets has full data
+  await syncNow();
+  const all = await fetch('/api/all-sheets').then(r => r.json());
+  const wb  = XLSX.utils.book_new();
+  all.sheets.forEach(sh => {
+    const ws = XLSX.utils.aoa_to_sheet([sh.headers || [], ...(sh.rows || [])]);
     XLSX.utils.book_append_sheet(wb, ws, sh.name);
   });
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
@@ -1166,7 +1165,6 @@ async function _buildSaveBody(filepath) {
 }
 
 async function saveFile() {
-  await syncNow();
   let body;
   try {
     body = await _buildSaveBody(S.filepath);
@@ -1211,12 +1209,8 @@ async function downloadFile(fmt) {
   const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx)$/i, '');
   if (fmt === 'xlsx') {
     try {
-      const wb = XLSX.utils.book_new();
-      (S.sheets || [{ name: 'Sheet1', headers: S.headers, rows: S.rows }]).forEach((sh, i) => {
-        const headers = (i === (S.activeSheet ?? 0)) ? S.headers : sh.headers;
-        const rows    = (i === (S.activeSheet ?? 0)) ? S.rows    : sh.rows;
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([headers, ...rows]), sh.name);
-      });
+      const u8  = await _buildXlsxBytes();
+      const wb  = XLSX.read(u8, { type: 'array' });
       XLSX.writeFile(wb, base + '.xlsx');
     } catch (err) { alert('Export failed: ' + err.message); return; }
   } else {
