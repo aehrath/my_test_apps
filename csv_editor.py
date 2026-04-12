@@ -1114,10 +1114,13 @@ function openFile() {
 
         const rows2d = [];
         ws.eachRow({ includeEmpty: true }, row => {
-          // row.values is 1-indexed sparse — iterate by index to preserve column positions
           const cells = [];
-          for (let c = 1; c <= maxCol; c++)
-            cells.push(fmt(row.getCell(c).value));
+          for (let c = 1; c <= maxCol; c++) {
+            const cell = row.getCell(c);
+            // Slave cells of a merge share the master's value — emit '' for them
+            const isSlave = cell.isMerged && cell.master.address !== cell.address;
+            cells.push(isSlave ? '' : fmt(cell.value));
+          }
           rows2d.push(cells);
         });
         // Trim trailing blank rows
