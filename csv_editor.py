@@ -40,6 +40,41 @@ state = State()
 
 # ── Excel helpers ─────────────────────────────────────────────────────────────
 
+import datetime as _dt
+import re as _re
+
+def _cell_to_str(value):
+    """Convert an openpyxl cell value to a clean string."""
+    if value is None:
+        return ''
+    if isinstance(value, bool):
+        return 'TRUE' if value else 'FALSE'
+    if isinstance(value, float):
+        # Avoid ugly "984.0" for whole numbers
+        return str(int(value)) if value == int(value) else str(value)
+    if isinstance(value, _dt.datetime):
+        # Strip the time portion when it is midnight (date-only cells)
+        if value.hour == 0 and value.minute == 0 and value.second == 0:
+            return value.strftime('%Y-%m-%d')
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+    if isinstance(value, _dt.date):
+        return value.strftime('%Y-%m-%d')
+    return str(value)
+
+_INT_RE  = _re.compile(r'^-?\d+$')
+_FLOAT_RE = _re.compile(r'^-?\d+\.?\d*([eE][+-]?\d+)?$')
+
+def _str_to_cell(s):
+    """Convert a string cell value back to an appropriate Python type for Excel."""
+    if not isinstance(s, str):
+        return s
+    if _INT_RE.match(s):
+        return int(s)
+    if _FLOAT_RE.match(s):
+        return float(s)
+    return s
+
+
 def _parse_xlsx(raw_bytes):
     """Parse an .xlsx binary into (headers, rows). Requires openpyxl."""
     if not _XLSX_OK:
@@ -48,7 +83,7 @@ def _parse_xlsx(raw_bytes):
     ws = wb.active
     all_rows = []
     for row in ws.iter_rows():
-        cells = ['' if cell.value is None else str(cell.value) for cell in row]
+        cells = [_cell_to_str(cell.value) for cell in row]
         all_rows.append(cells)
     # Trim trailing fully-blank rows
     while all_rows and all(v == '' for v in all_rows[-1]):
@@ -63,14 +98,15 @@ def _parse_xlsx(raw_bytes):
 
 
 def _write_xlsx(headers, rows):
-    """Serialise headers + rows to .xlsx bytes. Requires openpyxl."""
+    """Serialise headers + rows to .xlsx bytes. Requires openpyxl.
+    Numeric-looking strings are written as numbers so Excel treats them correctly."""
     if not _XLSX_OK:
         raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(headers)
+    ws.append(headers)  # headers always as strings
     for row in rows:
-        ws.append(row)
+        ws.append([_str_to_cell(c) for c in row])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
