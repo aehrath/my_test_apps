@@ -1545,22 +1545,25 @@ async function doCommit() {
   if (!msg) { alert('Enter a commit message.'); return; }
   await syncNow();
   setStatus('gh-commit-status', 'Pushing…', '');
-  const payload = { message: msg };
-  // For xlsx files, build the workbook in the browser and send as base64
   const isXlsx = (S.filepath || '').toLowerCase().endsWith('.xlsx') || S.filetype === 'xlsx';
+  let data;
   if (isXlsx) {
-    try {
-      const buf = await _buildXlsxBytes();
-      const u8  = new Uint8Array(buf);
-      let bin = '';
-      for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
-      payload.xlsxB64 = btoa(bin);
-    } catch(err) { setStatus('gh-commit-status', '✗ ' + err.message, 'err'); return; }
+    // Send raw xlsx bytes to binary endpoint — avoids JSON encoding issues
+    let buf;
+    try { buf = await _buildXlsxBytes(); }
+    catch(err) { setStatus('gh-commit-status', '✗ ' + err.message, 'err'); return; }
+    const url = '/api/github/commit-xlsx?message=' + encodeURIComponent(msg);
+    data = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array(buf)
+    }).then(r => r.json());
+  } else {
+    data = await fetch('/api/github/commit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: msg })
+    }).then(r => r.json());
   }
-  const data = await fetch('/api/github/commit', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
-  }).then(r => r.json());
   if (data.error) {
     setStatus('gh-commit-status', '✗ ' + data.error, 'err');
   } else {
@@ -1993,6 +1996,26 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length) if length else b'{}'
         # Binary endpoints must be handled before JSON parsing
+        if self.path.startswith('/api/github/commit-xlsx'):
+            qs      = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            message = qs.get('message', ['Update file'])[0] or 'Update file'
+            if not gh.token or not gh.repo or not gh.path:
+                self._json({'error': 'GitHub not configured'}); return
+            clean_path = gh.path.lstrip('/')
+            existing, _ = _gh_api('GET',
+                f'/repos/{gh.repo}/contents/{clean_path}?ref={urllib.parse.quote(gh.branch)}')
+            file_sha = existing.get('sha') if isinstance(existing, dict) else None
+            encoded  = base64.b64encode(body).decode('ascii')
+            payload  = {'message': message, 'content': encoded, 'branch': gh.branch}
+            if file_sha:
+                payload['sha'] = file_sha
+            result, err = _gh_api('PUT', f'/repos/{gh.repo}/contents/{clean_path}', payload)
+            if err:
+                self._json({'error': err})
+            else:
+                self._json({'ok': True, 'sha': result['commit']['sha'][:7],
+                            'url': result['commit']['html_url']})
+            return
         if self.path.startswith('/api/save-xlsx'):
             qs       = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             filepath = qs.get('filepath', [''])[0] or state.filepath or ''
@@ -2165,12 +2188,9 @@ class Handler(BaseHTTPRequestHandler):
             existing, _ = _gh_api('GET',
                 f'/repos/{gh.repo}/contents/{clean_path}?ref={urllib.parse.quote(gh.branch)}')
             file_sha = existing.get('sha') if isinstance(existing, dict) else None
-            # Encode content based on current filetype
+            # Encode content (CSV only — xlsx is handled by /api/github/commit-xlsx)
             if state.filetype == 'xlsx':
-                xlsx_b64 = data.get('xlsxB64', '')
-                if not xlsx_b64:
-                    self._json({'error': 'xlsx bytes missing from request'}); return
-                encoded = xlsx_b64  # already base64 from browser
+                self._json({'error': 'use /api/github/commit-xlsx for xlsx files'}); return
             else:
                 buf = io.StringIO()
                 csv.writer(buf).writerow(state.headers)
