@@ -1127,25 +1127,38 @@ function openFile() {
   inp.click();
 }
 
+function _u8ToBase64(u8) {
+  // Safe base64 encode for large Uint8Arrays (avoids call stack limit)
+  let bin = '';
+  const chunk = 8192;
+  for (let i = 0; i < u8.length; i += chunk)
+    bin += String.fromCharCode(...u8.subarray(i, i + chunk));
+  return btoa(bin);
+}
+
+async function _buildXlsxBase64() {
+  // Flush current sheet to server first, then fetch all sheets
+  await syncNow();
+  const all = await fetch('/api/all-sheets').then(r => r.json());
+  const wb  = XLSX.utils.book_new();
+  all.sheets.forEach(sh => {
+    const ws = XLSX.utils.aoa_to_sheet([sh.headers, ...sh.rows]);
+    XLSX.utils.book_append_sheet(wb, ws, sh.name);
+  });
+  const u8 = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+  return _u8ToBase64(u8);
+}
+
 async function _buildSaveBody(filepath) {
   const isXlsx = (filepath || '').toLowerCase().endsWith('.xlsx') || S.filetype === 'xlsx';
   if (isXlsx) {
-    // Build xlsx in browser with SheetJS, send as base64 so server just writes bytes
-    const all = await fetch('/api/all-sheets').then(r => r.json());
-    const wb  = XLSX.utils.book_new();
-    all.sheets.forEach(sh => {
-      const ws = XLSX.utils.aoa_to_sheet([sh.headers, ...sh.rows]);
-      XLSX.utils.book_append_sheet(wb, ws, sh.name);
-    });
-    const u8  = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
-    const b64 = btoa(String.fromCharCode(...u8));
+    const b64 = await _buildXlsxBase64();
     return JSON.stringify({ filepath, raw_bytes: b64 });
   }
   return JSON.stringify({ filepath });
 }
 
 async function saveFile() {
-  await syncNow();
   const body = await _buildSaveBody(S.filepath);
   const res  = await fetch('/api/save', {
     method: 'POST',
@@ -1165,7 +1178,6 @@ async function saveFile() {
 }
 
 async function saveAs() {
-  await syncNow();
   prompt_('Save to path (leave blank to download as ' + (S.filetype || 'csv').toUpperCase() + '):', S.filepath || '', async path => {
     if (!path) { downloadFile(); return; }
     const body = await _buildSaveBody(path);
@@ -1185,8 +1197,9 @@ async function downloadFile(fmt) {
   fmt = fmt || S.filetype || 'csv';
   const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx)$/i, '');
   if (fmt === 'xlsx') {
-    const all  = await fetch('/api/all-sheets').then(r => r.json());
-    const wb   = XLSX.utils.book_new();
+    await syncNow();
+    const all = await fetch('/api/all-sheets').then(r => r.json());
+    const wb  = XLSX.utils.book_new();
     all.sheets.forEach(sh => {
       const ws = XLSX.utils.aoa_to_sheet([sh.headers, ...sh.rows]);
       XLSX.utils.book_append_sheet(wb, ws, sh.name);
