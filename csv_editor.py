@@ -683,6 +683,7 @@ HTML = r"""<!DOCTYPE html>
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
 let S = { headers: [], rows: [], filepath: null, modified: false };
+let _xlsxWb = null;   // original SheetJS workbook kept in memory to preserve cell styles
 let selectedRows = new Set();   // indices of selected rows
 let selectedCols = new Set();   // indices of selected columns
 let anchorRow = -1;             // shift-click anchor
@@ -1088,7 +1089,8 @@ function openFile() {
     let body;
     if (isXlsx) {
       const buf = await file.arrayBuffer();
-      const wb  = XLSX.read(buf, { type: 'array', cellText: false, cellDates: true });
+      const wb  = XLSX.read(buf, { type: 'array', cellText: false, cellDates: true, cellStyles: true });
+      _xlsxWb = wb;  // keep original workbook in memory to preserve styles on save
       const fmt = v => {
         if (v instanceof Date) return v.toISOString().slice(0, 10);
         if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v);
@@ -1104,6 +1106,7 @@ function openFile() {
       });
       body = JSON.stringify({ sheets, filename: file.name, format: 'xlsx' });
     } else {
+      _xlsxWb = null;  // no original workbook for CSV files
       const content = await file.text();
       body = JSON.stringify({ content, filename: file.name, format: 'csv' });
     }
@@ -1137,10 +1140,53 @@ function _u8ToBase64(u8) {
 }
 
 async function _buildXlsxBytes() {
-  // syncNow flushes active sheet edits to server, then all-sheets has full data
+  // Flush active sheet edits to server first
   await syncNow();
   const all = await fetch('/api/all-sheets').then(r => r.json());
-  const wb  = XLSX.utils.book_new();
+
+  if (_xlsxWb) {
+    // Patch values into the original workbook — preserves all cell styles/colors
+    all.sheets.forEach(sh => {
+      const wsName = sh.name;
+      // Add sheet if it didn't exist in the original workbook
+      if (!_xlsxWb.Sheets[wsName]) {
+        const newWs = XLSX.utils.aoa_to_sheet([sh.headers || [], ...(sh.rows || [])]);
+        XLSX.utils.book_append_sheet(_xlsxWb, newWs, wsName);
+        return;
+      }
+      const ws  = _xlsxWb.Sheets[wsName];
+      const data = [sh.headers || [], ...(sh.rows || [])];
+      // Update the sheet ref to cover all data
+      const nRows = data.length, nCols = data[0] ? data[0].length : 0;
+      if (nRows > 0 && nCols > 0)
+        ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: nRows - 1, c: nCols - 1 } });
+      // Patch each cell value, preserving existing style
+      data.forEach((row, r) => {
+        row.forEach((val, c) => {
+          const ref  = XLSX.utils.encode_cell({ r, c });
+          const num  = val !== '' && !isNaN(val) ? Number(val) : null;
+          if (ws[ref]) {
+            // Cell exists — update value only, keep style
+            ws[ref].v = num !== null ? num : val;
+            ws[ref].t = num !== null ? 'n' : 's';
+            delete ws[ref].w;  // clear cached formatted text so Excel recalculates
+          } else {
+            // New cell — no existing style to preserve
+            ws[ref] = num !== null ? { v: num, t: 'n' } : { v: val, t: 's' };
+          }
+        });
+      });
+      // Remove cells that are now beyond the data range (deleted rows/cols)
+      Object.keys(ws).filter(k => k[0] !== '!').forEach(ref => {
+        const { r, c } = XLSX.utils.decode_cell(ref);
+        if (r >= nRows || c >= nCols) delete ws[ref];
+      });
+    });
+    return XLSX.write(_xlsxWb, { type: 'array', bookType: 'xlsx' });
+  }
+
+  // No original workbook (new file or CSV) — create fresh without styles
+  const wb = XLSX.utils.book_new();
   all.sheets.forEach(sh => {
     const ws = XLSX.utils.aoa_to_sheet([sh.headers || [], ...(sh.rows || [])]);
     XLSX.utils.book_append_sheet(wb, ws, sh.name);
@@ -1818,20 +1864,26 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/save-xlsx'):
             qs       = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             filepath = qs.get('filepath', [''])[0] or state.filepath or ''
+            print(f'[save-xlsx] filepath={filepath!r} body_len={len(body)}')
             if not filepath:
+                print('[save-xlsx] ERROR: no_path')
                 self._json({'ok': False, 'error': 'no_path'}); return
             if '/' not in filepath and '\\' not in filepath:
                 filepath = str(Path.cwd() / filepath)
+                print(f'[save-xlsx] resolved to {filepath!r}')
             try:
                 if not body:
+                    print('[save-xlsx] ERROR: no data received')
                     self._json({'ok': False, 'error': 'no data received'}); return
                 p = Path(filepath)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(body)
+                print(f'[save-xlsx] wrote {len(body)} bytes to {filepath!r}')
                 state.filepath = filepath
                 state.filetype = 'xlsx'
                 self._json({'ok': True, 'filepath': filepath})
             except Exception as e:
+                print(f'[save-xlsx] ERROR: {e}')
                 self._json({'ok': False, 'error': str(e)})
             return
         try:
