@@ -691,7 +691,7 @@ function _parseThemeColors(wb) {
     const doc = new DOMParser().parseFromString(xml, 'application/xml');
     const scheme = doc.querySelector('clrScheme');
     if (!scheme) return null;
-    const ORDER = ['dk1','lt1','dk2','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+    const ORDER = ['lt1','dk1','lt2','dk2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
     return ORDER.map(tag => {
       const el = scheme.querySelector(tag);
       if (!el) return '000000';
@@ -1195,7 +1195,9 @@ function openFile() {
             const doc = new DOMParser().parseFromString(xml, 'application/xml');
             const scheme = doc.querySelector('clrScheme');
             if (scheme) {
-              const ORDER = ['dk1','lt1','dk2','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+              // Theme indices: 0=lt1, 1=dk1, 2=lt2, 3=dk2, 4-9=accent1-6, 10=hlink, 11=folHlink
+              // XML clrScheme lists them as dk1,lt1,dk2,lt2,... so we query by name not by position
+              const ORDER = ['lt1','dk1','lt2','dk2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
               themeColors = ORDER.map(tag => {
                 const el = scheme.querySelector(tag);
                 if (!el) return '000000';
