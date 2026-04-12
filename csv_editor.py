@@ -1167,21 +1167,35 @@ function openFile() {
       let buf;
       try { buf = await file.arrayBuffer(); }
       catch(err) { alert('Failed to read file: ' + err.message); return; }
-      _xlsxOrigBuf = buf;  // kept so ExcelJS can reload at save time (style-preserving)
-      _xlsxWb = null;       // will be lazily loaded at first save
-
-      // SheetJS reads cell values AND raw styles correctly in the browser.
-      // cellStyles: true populates cell.s with fill/font/alignment including theme refs.
+      // SheetJS: reads cell values correctly in the browser
       let sjWb;
-      try { sjWb = XLSX.read(new Uint8Array(buf), { type: 'array', cellStyles: true, cellDates: true }); }
+      try { sjWb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true }); }
       catch(err) { alert('Failed to parse Excel file: ' + err.message); return; }
 
-      // Extract theme color palette so we can resolve {theme: N, tint: T} references
-      const themeColors = _parseThemeColors(sjWb);
+      // ExcelJS: reads styles with fully-resolved theme colors (ARGB).
+      // Cell values come back null in the browser, but styles are correct — that's all we need here.
+      // We also keep the workbook as _xlsxWb so save can update values in-place (preserving styles).
+      let ejWb = null;
+      try {
+        ejWb = new ExcelJS.Workbook();
+        await ejWb.xlsx.load(buf);
+        _xlsxWb = ejWb;
+        _xlsxOrigBuf = null;  // no longer needed — workbook is already loaded
+      } catch(err) {
+        _xlsxWb = null;
+        _xlsxOrigBuf = buf;  // fallback: reload lazily at save time
+      }
+
+      const argbToHex = argb => {
+        if (!argb || argb.length < 6) return null;
+        const hex = argb.length === 8 ? argb.slice(2) : argb;
+        return /^[0-9a-fA-F]{6}$/.test(hex) ? '#' + hex : null;
+      };
 
       sheets = sjWb.SheetNames.map(name => {
-        const ws  = sjWb.Sheets[name];
-        const ref = ws['!ref'];
+        const ws   = sjWb.Sheets[name];
+        const ejWs = ejWb ? ejWb.getWorksheet(name) : null;
+        const ref  = ws['!ref'];
         if (!ref) return { name, headers: [], rows: [], headerStyles: [], rowStyles: [] };
         const range = XLSX.utils.decode_range(ref);
         const rows2d = [], styles2d = [];
@@ -1192,31 +1206,37 @@ function openFile() {
             const addr = XLSX.utils.encode_cell({ r, c });
             const cell = ws[addr];
             if (!cell) { cells.push(''); rowSt.push(null); continue; }
-            // Value — prefer formatted text (cell.w); raw for booleans
+            // Value from SheetJS — prefer formatted text; raw for booleans
             let val = '';
             if (cell.t === 'b') val = cell.v ? 'TRUE' : 'FALSE';
             else if (cell.w != null) val = cell.w;
             else if (cell.v != null) val = String(cell.v);
             cells.push(val);
 
-            // Style from SheetJS cell.s — theme colors resolved via _resolveColor
-            const sjSt = cell.s || {};
-            const fill = sjSt.fill || {};
-            const font = sjSt.font || {};
-            const aln  = sjSt.alignment || {};
-            const st = {};
-            if (fill.patternType === 'solid') {
-              const bg = _resolveColor(fill.fgColor, themeColors);
-              if (bg) st.bg = bg;
+            // Style from ExcelJS — resolves theme colors to real ARGB hex
+            let st = null;
+            if (ejWs) {
+              const ejCell = ejWs.getCell(r + 1, c + 1);
+              const fill = ejCell.fill      || {};
+              const font = ejCell.font      || {};
+              const aln  = ejCell.alignment || {};
+              const s = {};
+              if (fill.type === 'pattern' && fill.pattern !== 'none' && fill.fgColor?.argb) {
+                const bg = argbToHex(fill.fgColor.argb);
+                if (bg) s.bg = bg;
+              }
+              if (font.color?.argb) {
+                const fc = argbToHex(font.color.argb);
+                if (fc) s.color = fc;
+              }
+              if (font.bold)       s.bold = true;
+              if (font.italic)     s.italic = true;
+              if (font.size)       s.fontSize = font.size;
+              if (font.name)       s.fontFamily = font.name;
+              if (aln.horizontal)  s.align = aln.horizontal;
+              st = Object.keys(s).length ? s : null;
             }
-            const fc = _resolveColor(font.color, themeColors);
-            if (fc) st.color = fc;
-            if (font.bold)   st.bold = true;
-            if (font.italic) st.italic = true;
-            if (font.sz)     st.fontSize = font.sz;
-            if (font.name)   st.fontFamily = font.name;
-            if (aln.horizontal) st.align = aln.horizontal;
-            rowSt.push(Object.keys(st).length ? st : null);
+            rowSt.push(st);
           }
           rows2d.push(cells);
           styles2d.push(rowSt);
@@ -1266,10 +1286,13 @@ async function _buildXlsxBytes() {
   await syncNow();
   const all = await fetch('/api/all-sheets').then(r => r.json());
 
-  // Lazily load ExcelJS from the original file bytes (preserves styles)
+  // If ExcelJS failed to load at open time, retry now from the saved buffer
   if (!_xlsxWb && _xlsxOrigBuf) {
-    _xlsxWb = new ExcelJS.Workbook();
-    await _xlsxWb.xlsx.load(_xlsxOrigBuf);
+    try {
+      _xlsxWb = new ExcelJS.Workbook();
+      await _xlsxWb.xlsx.load(_xlsxOrigBuf);
+      _xlsxOrigBuf = null;
+    } catch(e) { _xlsxWb = null; }
   }
 
   if (_xlsxWb) {
