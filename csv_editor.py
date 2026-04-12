@@ -19,6 +19,12 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+try:
+    import openpyxl
+    _XLSX_OK = True
+except ImportError:
+    _XLSX_OK = False
+
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -27,8 +33,47 @@ class State:
         self.headers: list = []
         self.rows: list = []
         self.filepath = None
+        self.filetype: str = 'csv'   # 'csv' or 'xlsx'
 
 state = State()
+
+
+# ── Excel helpers ─────────────────────────────────────────────────────────────
+
+def _parse_xlsx(raw_bytes):
+    """Parse an .xlsx binary into (headers, rows). Requires openpyxl."""
+    if not _XLSX_OK:
+        raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
+    wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+    ws = wb.active
+    all_rows = []
+    for row in ws.iter_rows():
+        cells = ['' if cell.value is None else str(cell.value) for cell in row]
+        all_rows.append(cells)
+    # Trim trailing fully-blank rows
+    while all_rows and all(v == '' for v in all_rows[-1]):
+        all_rows.pop()
+    if not all_rows:
+        return [], []
+    n_cols = max(len(r) for r in all_rows)
+    for r in all_rows:
+        while len(r) < n_cols:
+            r.append('')
+    return all_rows[0], all_rows[1:]
+
+
+def _write_xlsx(headers, rows):
+    """Serialise headers + rows to .xlsx bytes. Requires openpyxl."""
+    if not _XLSX_OK:
+        raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(headers)
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # ── GitHub state & helpers ────────────────────────────────────────────────────
@@ -421,6 +466,8 @@ HTML = r"""<!DOCTYPE html>
   <button onclick="openFile()">📂 Open</button>
   <button onclick="saveFile()">💾 Save</button>
   <button onclick="saveAs()">Save As…</button>
+  <button onclick="downloadFile('csv')"  title="Download as CSV">⬇ CSV</button>
+  <button onclick="downloadFile('xlsx')" title="Download as Excel">⬇ XLSX</button>
   <div class="sep"></div>
   <button onclick="addRow()">+ Row</button>
   <button onclick="deleteSelectedRow()">− Row</button>
@@ -933,15 +980,26 @@ function clearSearch() {
 function openFile() {
   const inp = document.createElement('input');
   inp.type = 'file';
-  inp.accept = '.csv,.tsv,.txt';
+  inp.accept = '.csv,.tsv,.txt,.xlsx';
   inp.onchange = async e => {
     const file = e.target.files[0];
     if (!file) return;
-    const content = await file.text();
+    const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+    let body;
+    if (isXlsx) {
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      body = JSON.stringify({ content: btoa(bin), filename: file.name, format: 'xlsx' });
+    } else {
+      const content = await file.text();
+      body = JSON.stringify({ content, filename: file.name, format: 'csv' });
+    }
     const res = await fetch('/api/load-content', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ content, filename: file.name })
+      body
     });
     if (res.ok) {
       S = await fetch('/api/data').then(r => r.json());
@@ -956,7 +1014,6 @@ function openFile() {
 }
 
 async function saveFile() {
-  // Sync latest edits first
   await syncNow();
   const res = await fetch('/api/save', {
     method: 'POST',
@@ -969,39 +1026,49 @@ async function saveFile() {
     S.modified = false;
     updateStatus();
   } else {
-    // No server-side path — fall back to download
-    downloadCSV();
+    // No server-side path — fall back to download in current format
+    downloadFile();
   }
 }
 
 async function saveAs() {
   await syncNow();
-  prompt_('Save to path (leave blank to download):', S.filepath || '', async path => {
-    if (!path) { downloadCSV(); return; }
+  prompt_('Save to path (leave blank to download as ' + (S.filetype || 'csv').toUpperCase() + '):', S.filepath || '', async path => {
+    if (!path) { downloadFile(); return; }
     const res = await fetch('/api/save', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ filepath: path })
     });
     const data = await res.json();
-    if (data.ok) { S.filepath = data.filepath; S.modified = false; updateStatus(); }
+    if (data.ok) { S.filepath = data.filepath; S.filetype = data.filetype || S.filetype; S.modified = false; updateStatus(); }
     else alert('Save failed: ' + data.error);
   });
 }
 
-async function downloadCSV() {
+async function downloadFile(fmt) {
   await syncNow();
-  const res = await fetch('/api/export', { method: 'POST' });
+  fmt = fmt || S.filetype || 'csv';
+  const res = await fetch('/api/export', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ format: fmt })
+  });
+  if (!res.ok) { alert('Export failed'); return; }
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
   a.href = url;
-  a.download = S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data.csv';
+  const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx)$/i, '');
+  a.download = base + '.' + fmt;
   a.click();
   URL.revokeObjectURL(url);
   S.modified = false;
   updateStatus();
 }
+
+// Legacy alias
+async function downloadCSV() { return downloadFile('csv'); }
 
 // ── Server sync ────────────────────────────────────────────────────────────
 let syncTimer = null;
@@ -1194,7 +1261,9 @@ async function showDiff(sha, label) {
   const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
   if (data.error) { alert('Could not fetch version: ' + data.error); return; }
 
-  const { headers: commitH, rows: commitR } = parseCSV(data.content);
+  const { headers: commitH, rows: commitR } = data.format === 'xlsx'
+    ? { headers: data.headers, rows: data.rows }
+    : parseCSV(data.content);
   _diffVersion = { sha, headers: commitH, rows: commitR };
 
   const { mapping, incomingRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
@@ -1235,7 +1304,9 @@ async function loadVersion(sha) {
   if (!confirm('Replace current data with this version? Unsaved changes will be lost.')) return;
   const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
   if (data.error) { alert('Error: ' + data.error); return; }
-  const { headers, rows } = parseCSV(data.content);
+  const { headers, rows } = data.format === 'xlsx'
+    ? { headers: data.headers, rows: data.rows }
+    : parseCSV(data.content);
   S.headers = headers; S.rows = rows;
   setBaseline(headers, rows);
   selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
@@ -1454,6 +1525,7 @@ class Handler(BaseHTTPRequestHandler):
                 'headers':  state.headers,
                 'rows':     state.rows,
                 'filepath': state.filepath,
+                'filetype': state.filetype,
             })
         elif self.path == '/api/github/config':
             self._json({
@@ -1486,8 +1558,18 @@ class Handler(BaseHTTPRequestHandler):
             result, err = _gh_api('GET', f'/repos/{gh.repo}/contents/{path.lstrip("/")}?ref={sha}')
             if err:
                 self._json({'error': err}); return
-            content = base64.b64decode(result['content'].replace('\n', '')).decode('utf-8-sig')
-            self._json({'content': content, 'sha': sha})
+            raw_bytes = base64.b64decode(result['content'].replace('\n', ''))
+            if path.lower().endswith('.xlsx'):
+                if not _XLSX_OK:
+                    self._json({'error': 'openpyxl not installed — run: pip install openpyxl'}); return
+                try:
+                    headers, rows = _parse_xlsx(raw_bytes)
+                    self._json({'headers': headers, 'rows': rows, 'sha': sha, 'format': 'xlsx'})
+                except Exception as e:
+                    self._json({'error': str(e)})
+            else:
+                content = raw_bytes.decode('utf-8-sig')
+                self._json({'content': content, 'sha': sha, 'format': 'csv'})
         else:
             self._send(404, b'Not found')
 
@@ -1500,19 +1582,31 @@ class Handler(BaseHTTPRequestHandler):
             data = {}
 
         if self.path == '/api/load-content':
-            content  = data.get('content', '')
             filename = data.get('filename', 'data.csv')
-            reader   = csv.reader(io.StringIO(content))
-            all_rows = list(reader)
-            if all_rows:
-                state.headers = all_rows[0]
-                state.rows    = [list(r) for r in all_rows[1:]]
-                for row in state.rows:
-                    while len(row) < len(state.headers):
-                        row.append('')
+            fmt      = data.get('format', 'csv')
+            if fmt == 'xlsx':
+                if not _XLSX_OK:
+                    self._json({'ok': False, 'error': 'openpyxl not installed — run: pip install openpyxl'}); return
+                try:
+                    raw = base64.b64decode(data.get('content', ''))
+                    state.headers, state.rows = _parse_xlsx(raw)
+                    state.filetype = 'xlsx'
+                except Exception as e:
+                    self._json({'ok': False, 'error': str(e)}); return
             else:
-                state.headers = []
-                state.rows    = []
+                content  = data.get('content', '')
+                reader   = csv.reader(io.StringIO(content))
+                all_rows = list(reader)
+                if all_rows:
+                    state.headers = all_rows[0]
+                    state.rows    = [list(r) for r in all_rows[1:]]
+                    for row in state.rows:
+                        while len(row) < len(state.headers):
+                            row.append('')
+                else:
+                    state.headers = []
+                    state.rows    = []
+                state.filetype = 'csv'
             state.filepath = filename
             self._json({'ok': True})
 
@@ -1524,30 +1618,52 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/api/save':
             filepath = data.get('filepath') or state.filepath
             if not filepath or ('/' not in filepath and '\\' not in filepath):
-                # Only a bare filename, can't determine directory → tell client to download
                 self._json({'ok': False, 'error': 'no_path'})
                 return
             try:
-                Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-                with open(filepath, 'w', newline='', encoding='utf-8') as f:
-                    csv.writer(f).writerow(state.headers)
-                    csv.writer(f).writerows(state.rows)
+                p = Path(filepath)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                if p.suffix.lower() == '.xlsx':
+                    if not _XLSX_OK:
+                        self._json({'ok': False, 'error': 'openpyxl not installed — run: pip install openpyxl'}); return
+                    p.write_bytes(_write_xlsx(state.headers, state.rows))
+                    state.filetype = 'xlsx'
+                else:
+                    with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                        csv.writer(f).writerow(state.headers)
+                        csv.writer(f).writerows(state.rows)
+                    state.filetype = 'csv'
                 state.filepath = filepath
-                self._json({'ok': True, 'filepath': filepath})
+                self._json({'ok': True, 'filepath': filepath, 'filetype': state.filetype})
             except Exception as e:
                 self._json({'ok': False, 'error': str(e)})
 
         elif self.path == '/api/export':
-            buf = io.StringIO()
-            w   = csv.writer(buf)
-            w.writerow(state.headers)
-            w.writerows(state.rows)
-            raw = buf.getvalue().encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/csv; charset=utf-8')
-            self.send_header('Content-Length', str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
+            fmt = data.get('format', state.filetype)
+            if fmt == 'xlsx':
+                if not _XLSX_OK:
+                    self._json({'error': 'openpyxl not installed — run: pip install openpyxl'}); return
+                try:
+                    raw = _write_xlsx(state.headers, state.rows)
+                except Exception as e:
+                    self._json({'error': str(e)}); return
+                self.send_response(200)
+                self.send_header('Content-Type',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                self.send_header('Content-Length', str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            else:
+                buf = io.StringIO()
+                w   = csv.writer(buf)
+                w.writerow(state.headers)
+                w.writerows(state.rows)
+                raw = buf.getvalue().encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/csv; charset=utf-8')
+                self.send_header('Content-Length', str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
 
         elif self.path == '/api/github/config':
             gh.token  = data.get('token',  gh.token)
@@ -1560,23 +1676,27 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/api/github/commit':
             if not gh.token or not gh.repo or not gh.path:
                 self._json({'error': 'GitHub not configured'}); return
-            message = data.get('message', 'Update CSV').strip() or 'Update CSV'
-            # Strip any accidental leading slash — GitHub API paths must not start with /
+            message    = data.get('message', 'Update file').strip() or 'Update file'
             clean_path = gh.path.lstrip('/')
-            # GET the file's current blob SHA (needed to update; omit to create new file).
-            # Any error here (404 = new file, 409 = empty repo, etc.) is non-fatal:
-            # we simply attempt a create (no sha). Authentication errors are caught by PUT.
             existing, _ = _gh_api('GET',
                 f'/repos/{gh.repo}/contents/{clean_path}?ref={urllib.parse.quote(gh.branch)}')
             file_sha = existing.get('sha') if isinstance(existing, dict) else None
-            # Build CSV content
-            buf = io.StringIO()
-            csv.writer(buf).writerow(state.headers)
-            csv.writer(buf).writerows(state.rows)
-            encoded = base64.b64encode(buf.getvalue().encode('utf-8')).decode()
+            # Encode content based on current filetype
+            if state.filetype == 'xlsx':
+                if not _XLSX_OK:
+                    self._json({'error': 'openpyxl not installed — run: pip install openpyxl'}); return
+                try:
+                    encoded = base64.b64encode(_write_xlsx(state.headers, state.rows)).decode()
+                except Exception as e:
+                    self._json({'error': str(e)}); return
+            else:
+                buf = io.StringIO()
+                csv.writer(buf).writerow(state.headers)
+                csv.writer(buf).writerows(state.rows)
+                encoded = base64.b64encode(buf.getvalue().encode('utf-8')).decode()
             payload = {'message': message, 'content': encoded, 'branch': gh.branch}
             if file_sha:
-                payload['sha'] = file_sha   # required for updates; omitted for new files
+                payload['sha'] = file_sha
             result, err = _gh_api('PUT', f'/repos/{gh.repo}/contents/{clean_path}', payload)
             if err:
                 self._json({'error': err})
@@ -1619,18 +1739,31 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     load_gh_config()
 
-    # Optionally load a CSV passed as a CLI argument
+    if not _XLSX_OK:
+        print('Note: openpyxl not installed — Excel (.xlsx) support disabled.')
+        print('      pip install openpyxl\n')
+
+    # Optionally load a file passed as a CLI argument
     if len(sys.argv) > 1:
         path = Path(sys.argv[1]).expanduser().resolve()
         if path.exists():
-            with open(path, newline='', encoding='utf-8-sig') as f:
-                rows = list(csv.reader(f))
-            if rows:
-                state.headers = rows[0]
-                state.rows    = [list(r) for r in rows[1:]]
-                for row in state.rows:
-                    while len(row) < len(state.headers):
-                        row.append('')
+            if path.suffix.lower() == '.xlsx':
+                if not _XLSX_OK:
+                    print('Error: openpyxl is required to open .xlsx files.')
+                    print('       pip install openpyxl')
+                    sys.exit(1)
+                state.headers, state.rows = _parse_xlsx(path.read_bytes())
+                state.filetype = 'xlsx'
+            else:
+                with open(path, newline='', encoding='utf-8-sig') as f:
+                    rows = list(csv.reader(f))
+                if rows:
+                    state.headers = rows[0]
+                    state.rows    = [list(r) for r in rows[1:]]
+                    for row in state.rows:
+                        while len(row) < len(state.headers):
+                            row.append('')
+                state.filetype = 'csv'
             state.filepath = str(path)
         else:
             print(f'File not found: {path}')
