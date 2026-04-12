@@ -196,7 +196,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <title>CSV Editor</title>
-<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1089,24 +1089,30 @@ function openFile() {
     let body;
     if (isXlsx) {
       const buf = await file.arrayBuffer();
-      const wb  = XLSX.read(buf, { type: 'array', cellText: false, cellDates: true, cellStyles: true });
-      _xlsxWb = wb;  // keep original workbook in memory to preserve styles on save
+      const wb  = new ExcelJS.Workbook();
+      await wb.xlsx.load(buf);
+      _xlsxWb = wb;  // keep for style-preserving save
       const fmt = v => {
+        if (v === null || v === undefined) return '';
         if (v instanceof Date) return v.toISOString().slice(0, 10);
+        if (typeof v === 'object' && v.richText) return v.richText.map(r => r.text).join('');
         if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v);
-        return String(v ?? '');
+        return String(v);
       };
-      const sheets = wb.SheetNames.map(name => {
-        const ws   = wb.Sheets[name];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-        const rows2d = data.map(r => r.map(fmt));
+      const sheets = wb.worksheets.map(ws => {
+        const rows2d = [];
+        ws.eachRow({ includeEmpty: true }, row => {
+          rows2d.push(row.values.slice(1).map(fmt));
+        });
+        // Trim trailing blank rows
+        while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
         const headers = rows2d[0] || [];
-        const rows    = rows2d.slice(1).filter(r => r.some(c => c !== ''));
-        return { name, headers, rows };
+        const rows    = rows2d.slice(1);
+        return { name: ws.name, headers, rows };
       });
       body = JSON.stringify({ sheets, filename: file.name, format: 'xlsx' });
     } else {
-      _xlsxWb = null;  // no original workbook for CSV files
+      _xlsxWb = null;
       const content = await file.text();
       body = JSON.stringify({ content, filename: file.name, format: 'csv' });
     }
@@ -1130,68 +1136,45 @@ function openFile() {
   inp.click();
 }
 
-function _u8ToBase64(u8) {
-  // Safe base64 encode for large Uint8Arrays (avoids call stack limit)
-  let bin = '';
-  const chunk = 8192;
-  for (let i = 0; i < u8.length; i += chunk)
-    bin += String.fromCharCode(...u8.subarray(i, i + chunk));
-  return btoa(bin);
-}
-
 async function _buildXlsxBytes() {
   // Flush active sheet edits to server first
   await syncNow();
   const all = await fetch('/api/all-sheets').then(r => r.json());
 
   if (_xlsxWb) {
-    // Patch values into the original workbook — preserves all cell styles/colors
+    // Update values in-place in the original ExcelJS workbook — styles are preserved
     all.sheets.forEach(sh => {
-      const wsName = sh.name;
-      // Add sheet if it didn't exist in the original workbook
-      if (!_xlsxWb.Sheets[wsName]) {
-        const newWs = XLSX.utils.aoa_to_sheet([sh.headers || [], ...(sh.rows || [])]);
-        XLSX.utils.book_append_sheet(_xlsxWb, newWs, wsName);
-        return;
-      }
-      const ws  = _xlsxWb.Sheets[wsName];
+      let ws = _xlsxWb.getWorksheet(sh.name);
+      if (!ws) ws = _xlsxWb.addWorksheet(sh.name);
       const data = [sh.headers || [], ...(sh.rows || [])];
-      // Update the sheet ref to cover all data
-      const nRows = data.length, nCols = data[0] ? data[0].length : 0;
-      if (nRows > 0 && nCols > 0)
-        ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: nRows - 1, c: nCols - 1 } });
-      // Patch each cell value, preserving existing style
-      data.forEach((row, r) => {
-        row.forEach((val, c) => {
-          const ref  = XLSX.utils.encode_cell({ r, c });
-          const num  = val !== '' && !isNaN(val) ? Number(val) : null;
-          if (ws[ref]) {
-            // Cell exists — update value only, keep style
-            ws[ref].v = num !== null ? num : val;
-            ws[ref].t = num !== null ? 'n' : 's';
-            delete ws[ref].w;  // clear cached formatted text so Excel recalculates
-          } else {
-            // New cell — no existing style to preserve
-            ws[ref] = num !== null ? { v: num, t: 'n' } : { v: val, t: 's' };
-          }
+      data.forEach((row, ri) => {
+        row.forEach((val, ci) => {
+          const cell = ws.getCell(ri + 1, ci + 1);
+          // Update value only — cell.style is untouched so fill/font are preserved
+          const num = val !== '' && val !== null && !isNaN(val) && val.trim() !== '';
+          cell.value = num ? Number(val) : (val === '' ? null : val);
         });
+        // Clear any cells beyond the new column count (deleted columns)
+        const oldColCount = ws.getRow(ri + 1).cellCount;
+        for (let ci = row.length + 1; ci <= oldColCount; ci++)
+          ws.getCell(ri + 1, ci).value = null;
       });
-      // Remove cells that are now beyond the data range (deleted rows/cols)
-      Object.keys(ws).filter(k => k[0] !== '!').forEach(ref => {
-        const { r, c } = XLSX.utils.decode_cell(ref);
-        if (r >= nRows || c >= nCols) delete ws[ref];
-      });
+      // Clear any rows beyond the new row count (deleted rows)
+      const oldRowCount = ws.rowCount;
+      for (let ri = data.length + 1; ri <= oldRowCount; ri++)
+        ws.getRow(ri).eachCell(cell => { cell.value = null; });
     });
-    return XLSX.write(_xlsxWb, { type: 'array', bookType: 'xlsx' });
+    return await _xlsxWb.xlsx.writeBuffer();
   }
 
-  // No original workbook (new file or CSV) — create fresh without styles
-  const wb = XLSX.utils.book_new();
+  // No original workbook — create fresh (no styles)
+  const wb = new ExcelJS.Workbook();
   all.sheets.forEach(sh => {
-    const ws = XLSX.utils.aoa_to_sheet([sh.headers || [], ...(sh.rows || [])]);
-    XLSX.utils.book_append_sheet(wb, ws, sh.name);
+    const ws = wb.addWorksheet(sh.name);
+    ws.addRow(sh.headers || []);
+    (sh.rows || []).forEach(r => ws.addRow(r));
   });
-  return XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+  return await wb.xlsx.writeBuffer();
 }
 
 async function _saveXlsx(filepath) {
@@ -1255,9 +1238,11 @@ async function downloadFile(fmt) {
   const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx)$/i, '');
   if (fmt === 'xlsx') {
     try {
-      const u8  = await _buildXlsxBytes();
-      const wb  = XLSX.read(u8, { type: 'array' });
-      XLSX.writeFile(wb, base + '.xlsx');
+      const buf  = await _buildXlsxBytes();
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a'); a.href = url; a.download = base + '.xlsx'; a.click();
+      URL.revokeObjectURL(url);
     } catch (err) { alert('Export failed: ' + err.message); return; }
   } else {
     const res = await fetch('/api/export', {
