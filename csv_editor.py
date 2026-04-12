@@ -684,6 +684,7 @@ HTML = r"""<!DOCTYPE html>
 // ── State ──────────────────────────────────────────────────────────────────
 let S = { headers: [], rows: [], filepath: null, modified: false };
 let _xlsxWb = null;   // original SheetJS workbook kept in memory to preserve cell styles
+let _cellStyles = null; // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
 let selectedRows = new Set();   // indices of selected rows
 let selectedCols = new Set();   // indices of selected columns
 let anchorRow = -1;             // shift-click anchor
@@ -755,8 +756,25 @@ function renderHeaders() {
       if (!e.shiftKey && !e.metaKey && !e.ctrlKey) sortBy(i);
     };
     el.ondblclick = (e) => { e.stopPropagation(); renameColumn(i); };
+    if (_cellStyles && _cellStyles.headerStyles[i]) {
+      const st = _cellStyles.headerStyles[i];
+      if (st) applyExcelStyle(el, null, st);
+    }
     tr.appendChild(el);
   });
+}
+
+function applyExcelStyle(td, inp, st) {
+  if (!st) return;
+  if (st.bg)         td.style.backgroundColor = st.bg;
+  if (st.color) {
+    td.style.color = st.color;
+    if (inp) inp.style.color = st.color;
+  }
+  if (st.bold)       { td.style.fontWeight = 'bold';   if (inp) inp.style.fontWeight = 'bold'; }
+  if (st.italic)     { td.style.fontStyle  = 'italic'; if (inp) inp.style.fontStyle  = 'italic'; }
+  if (st.fontSize)   { const px = Math.round(st.fontSize * 1.33) + 'px'; td.style.fontSize = px; if (inp) inp.style.fontSize = px; }
+  if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
 }
 
 function renderRows() {
@@ -857,6 +875,11 @@ function renderRows() {
       inp.addEventListener('keydown', onCellKeyDown);
       if (oldValLabel) td.appendChild(oldValLabel);
       td.appendChild(inp);
+      // Apply Excel cell style if available
+      if (_cellStyles && _cellStyles.rowStyles[r]) {
+        const st = _cellStyles.rowStyles[r][c];
+        if (st) applyExcelStyle(td, inp, st);
+      }
       tr.appendChild(td);
     });
 
@@ -1112,22 +1135,60 @@ function openFile() {
         let maxCol = 0;
         ws.eachRow(row => { if (row.cellCount > maxCol) maxCol = row.cellCount; });
 
+        const argbToRgba = argb => {
+          if (!argb || argb.length < 6) return null;
+          // ARGB format: AARRGGBB or RRGGBB
+          const hex = argb.length === 8 ? argb.slice(2) : argb;
+          return '#' + hex;
+        };
+
+        const extractStyle = cell => {
+          const s = {};
+          const f = cell.font || {};
+          const a = cell.alignment || {};
+          const fill = cell.fill || {};
+
+          // Background
+          if (fill.type === 'pattern' && fill.pattern !== 'none' && fill.fgColor) {
+            const bg = argbToRgba(fill.fgColor.argb || fill.fgColor.rgb || '');
+            if (bg) s.bg = bg;
+          }
+          // Font color
+          if (f.color) {
+            const fc = argbToRgba(f.color.argb || f.color.rgb || '');
+            if (fc) s.color = fc;
+          }
+          // Font style
+          if (f.bold)   s.bold = true;
+          if (f.italic) s.italic = true;
+          if (f.size)   s.fontSize = f.size;
+          if (f.name)   s.fontFamily = f.name;
+          // Alignment
+          if (a.horizontal) s.align = a.horizontal;  // left, center, right
+          if (a.wrapText)   s.wrap = true;
+
+          return Object.keys(s).length ? s : null;
+        };
+
         const rows2d = [];
+        const styles2d = [];
         ws.eachRow({ includeEmpty: true }, row => {
           const cells = [];
+          const rowStyles = [];
           for (let c = 1; c <= maxCol; c++) {
             const cell = row.getCell(c);
-            // Slave cells of a merge share the master's value — emit '' for them
             const isSlave = cell.isMerged && cell.master.address !== cell.address;
             cells.push(isSlave ? '' : fmt(cell.value));
+            rowStyles.push(isSlave ? null : extractStyle(cell));
           }
           rows2d.push(cells);
+          styles2d.push(rowStyles);
         });
         // Trim trailing blank rows
         while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
         const headers = rows2d[0] || [];
         const rows    = rows2d.slice(1);
-        return { name: ws.name, headers, rows };
+        return { name: ws.name, headers, rows, headerStyles: styles2d[0] || [], rowStyles: styles2d.slice(1) };
       });
       body = JSON.stringify({ sheets, filename: file.name, format: 'xlsx' });
     } else {
@@ -1143,6 +1204,11 @@ function openFile() {
     const json = await res.json();
     if (json.ok) {
       S = await fetch('/api/data').then(r => r.json());
+      if (isXlsx) {
+        _cellStyles = { headerStyles: sheets[0].headerStyles || [], rowStyles: sheets[0].rowStyles || [] };
+      } else {
+        _cellStyles = null;
+      }
       setBaseline(S.headers, S.rows);
       sortCol = -1; sortAsc = true;
       resetSelection();
@@ -1753,6 +1819,10 @@ async function switchSheet(idx) {
     body: JSON.stringify({ index: idx })
   });
   S = await fetch('/api/data').then(r => r.json());
+  // Fetch all-sheets to get styles for new active sheet
+  const allData = await fetch('/api/all-sheets').then(r => r.json());
+  const activeSh = allData.sheets[idx];
+  _cellStyles = activeSh ? { headerStyles: activeSh.headerStyles || [], rowStyles: activeSh.rowStyles || [] } : null;
   setBaseline(S.headers, S.rows);
   resetSelection(); clearSearch();
   render();
