@@ -682,6 +682,56 @@ HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
+// ── Excel theme-color helpers ──────────────────────────────────────────────
+// Extract the 12 base theme colors from SheetJS wb.Themes XML (e.g. dk1, lt1, accent1–6 …)
+function _parseThemeColors(wb) {
+  const xml = wb.Themes;
+  if (typeof xml !== 'string' || !xml) return null;
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const scheme = doc.querySelector('clrScheme');
+    if (!scheme) return null;
+    const ORDER = ['dk1','lt1','dk2','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+    return ORDER.map(tag => {
+      const el = scheme.querySelector(tag);
+      if (!el) return '000000';
+      return el.querySelector('srgbClr')?.getAttribute('val')
+          || el.querySelector('sysClr')?.getAttribute('lastClr')
+          || '000000';
+    });
+  } catch(e) { return null; }
+}
+
+// Apply Excel luminance tint to an RRGGBB hex string (tint in -1..1)
+function _applyTint(hex, tint) {
+  if (!tint) return hex;
+  const r=parseInt(hex.slice(0,2),16)/255, g=parseInt(hex.slice(2,4),16)/255, b=parseInt(hex.slice(4,6),16)/255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b);
+  let h=0, s=0, l=(max+min)/2;
+  if (max!==min) {
+    const d=max-min;
+    s=l>0.5?d/(2-max-min):d/(max+min);
+    if(max===r)h=((g-b)/d+(g<b?6:0))/6;
+    else if(max===g)h=((b-r)/d+2)/6;
+    else h=((r-g)/d+4)/6;
+  }
+  l = tint>=0 ? l*(1-tint)+tint : l*(1+tint);
+  l = Math.max(0, Math.min(1, l));
+  const q=l<0.5?l*(1+s):l+s-l*s, p=2*l-q;
+  const hue2rgb=(p,q,t)=>{if(t<0)t+=1;if(t>1)t-=1;if(t<1/6)return p+(q-p)*6*t;if(t<.5)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;};
+  const nr=s?hue2rgb(p,q,h+1/3):l, ng=s?hue2rgb(p,q,h):l, nb=s?hue2rgb(p,q,h-1/3):l;
+  return [nr,ng,nb].map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');
+}
+
+// Resolve a SheetJS color object {rgb, theme, tint, indexed} to CSS #RRGGBB (or null)
+function _resolveColor(c, themeColors) {
+  if (!c) return null;
+  if (c.rgb)             return '#' + c.rgb.slice(-6);          // explicit RGB/ARGB
+  if (c.theme != null && themeColors)
+    return '#' + _applyTint(themeColors[c.theme] || '000000', c.tint || 0);
+  return null;   // indexed / auto — skip
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 let S = { headers: [], rows: [], filepath: null, modified: false };
 let _xlsxWb = null;      // ExcelJS workbook loaded lazily at save time (for style preservation)
@@ -1117,16 +1167,20 @@ function openFile() {
       let buf;
       try { buf = await file.arrayBuffer(); }
       catch(err) { alert('Failed to read file: ' + err.message); return; }
-      _xlsxOrigBuf = buf;  // keep raw bytes so ExcelJS can reload at save time
-      _xlsxWb = null;       // reset; loaded lazily on first save
+      _xlsxOrigBuf = buf;  // kept so ExcelJS can reload at save time (style-preserving)
+      _xlsxWb = null;       // will be lazily loaded at first save
 
-      // SheetJS reads cell values correctly in browser; ExcelJS cannot (returns empty values)
+      // SheetJS reads cell values AND raw styles correctly in the browser.
+      // cellStyles: true populates cell.s with fill/font/alignment including theme refs.
       let sjWb;
       try { sjWb = XLSX.read(new Uint8Array(buf), { type: 'array', cellStyles: true, cellDates: true }); }
       catch(err) { alert('Failed to parse Excel file: ' + err.message); return; }
 
+      // Extract theme color palette so we can resolve {theme: N, tint: T} references
+      const themeColors = _parseThemeColors(sjWb);
+
       sheets = sjWb.SheetNames.map(name => {
-        const ws = sjWb.Sheets[name];
+        const ws  = sjWb.Sheets[name];
         const ref = ws['!ref'];
         if (!ref) return { name, headers: [], rows: [], headerStyles: [], rowStyles: [] };
         const range = XLSX.utils.decode_range(ref);
@@ -1138,20 +1192,25 @@ function openFile() {
             const addr = XLSX.utils.encode_cell({ r, c });
             const cell = ws[addr];
             if (!cell) { cells.push(''); rowSt.push(null); continue; }
-            // Value — prefer formatted text (cell.w) for numbers/dates; use raw for booleans
+            // Value — prefer formatted text (cell.w); raw for booleans
             let val = '';
             if (cell.t === 'b') val = cell.v ? 'TRUE' : 'FALSE';
             else if (cell.w != null) val = cell.w;
             else if (cell.v != null) val = String(cell.v);
             cells.push(val);
-            // Style — SheetJS populates cell.s when cellStyles: true
-            const s   = cell.s    || {};
-            const fill = s.fill   || {};
-            const font = s.font   || {};
-            const aln  = s.alignment || {};
+
+            // Style from SheetJS cell.s — theme colors resolved via _resolveColor
+            const sjSt = cell.s || {};
+            const fill = sjSt.fill || {};
+            const font = sjSt.font || {};
+            const aln  = sjSt.alignment || {};
             const st = {};
-            if (fill.fgColor && fill.fgColor.rgb) st.bg = '#' + fill.fgColor.rgb.slice(-6);
-            if (font.color  && font.color.rgb)    st.color = '#' + font.color.rgb.slice(-6);
+            if (fill.patternType === 'solid') {
+              const bg = _resolveColor(fill.fgColor, themeColors);
+              if (bg) st.bg = bg;
+            }
+            const fc = _resolveColor(font.color, themeColors);
+            if (fc) st.color = fc;
             if (font.bold)   st.bold = true;
             if (font.italic) st.italic = true;
             if (font.sz)     st.fontSize = font.sz;
