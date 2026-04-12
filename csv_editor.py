@@ -1139,8 +1139,11 @@ async function saveFile() {
     S.filepath = data.filepath;
     S.modified = false;
     updateStatus();
+  } else if (data.error === 'no_path') {
+    // No path known — ask where to save
+    saveAs();
   } else {
-    // No server-side path — fall back to download in current format
+    alert('Save failed: ' + data.error);
     downloadFile();
   }
 }
@@ -1815,9 +1818,13 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == '/api/save':
             filepath = data.get('filepath') or state.filepath
-            if not filepath or ('/' not in filepath and '\\' not in filepath):
+            if not filepath:
                 self._json({'ok': False, 'error': 'no_path'})
                 return
+            # If only a bare filename (no directory), resolve against cwd
+            p_check = Path(filepath)
+            if not p_check.is_absolute() and '/' not in filepath and '\\' not in filepath:
+                filepath = str(Path.cwd() / filepath)
             try:
                 p = Path(filepath)
                 p.parent.mkdir(parents=True, exist_ok=True)
