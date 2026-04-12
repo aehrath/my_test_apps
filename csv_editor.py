@@ -2076,7 +2076,9 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 self._json({'error': err}); return
             raw_bytes = base64.b64decode(result['content'].replace('\n', ''))
-            if path.lower().endswith('.xlsx'):
+            # Detect xlsx by extension OR by zip magic bytes (PK\x03\x04) — gh.path may lack extension
+            is_xlsx = path.lower().endswith('.xlsx') or raw_bytes[:4] == b'PK\x03\x04'
+            if is_xlsx:
                 # Return raw bytes as base64 — browser parses with SheetJS (no openpyxl needed)
                 self._json({'rawB64': base64.b64encode(raw_bytes).decode('ascii'), 'sha': sha, 'format': 'xlsx'})
             else:
