@@ -180,6 +180,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <title>CSV Editor</title>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1027,14 +1028,22 @@ function openFile() {
     const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
     let body;
     if (isXlsx) {
-      // Use FileReader for reliable binary→base64 on any file size
-      const b64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload  = () => resolve(reader.result.split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-      body = JSON.stringify({ content: b64, filename: file.name, format: 'xlsx' });
+      // Parse xlsx in the browser with SheetJS — no server-side dependency needed
+      const buf = await file.arrayBuffer();
+      const wb  = XLSX.read(buf, { type: 'array', cellText: false, cellDates: true });
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      // sheet_to_json with header:1 gives array-of-arrays; defval fills empty cells
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      // Format cell values: dates → YYYY-MM-DD, numbers → clean strings
+      const fmt = v => {
+        if (v instanceof Date) return v.toISOString().slice(0, 10);
+        if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v);
+        return String(v ?? '');
+      };
+      const rows2d = data.map(r => r.map(fmt));
+      const headers = rows2d[0] || [];
+      const rows    = rows2d.slice(1).filter(r => r.some(c => c !== ''));
+      body = JSON.stringify({ headers, rows, filename: file.name, format: 'xlsx' });
     } else {
       const content = await file.text();
       body = JSON.stringify({ content, filename: file.name, format: 'csv' });
@@ -1095,20 +1104,29 @@ async function saveAs() {
 async function downloadFile(fmt) {
   await syncNow();
   fmt = fmt || S.filetype || 'csv';
-  const res = await fetch('/api/export', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ format: fmt })
-  });
-  if (!res.ok) { alert('Export failed'); return; }
-  const blob = await res.blob();
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url;
   const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx)$/i, '');
-  a.download = base + '.' + fmt;
-  a.click();
-  URL.revokeObjectURL(url);
+  if (fmt === 'xlsx') {
+    // Build xlsx entirely in the browser with SheetJS — no server dependency
+    const data = [S.headers, ...S.rows];
+    const ws   = XLSX.utils.aoa_to_sheet(data);
+    const wb   = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, base + '.xlsx');
+  } else {
+    const res = await fetch('/api/export', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ format: 'csv' })
+    });
+    if (!res.ok) { alert('Export failed'); return; }
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = base + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
   S.modified = false;
   updateStatus();
 }
@@ -1631,15 +1649,10 @@ class Handler(BaseHTTPRequestHandler):
             filename = data.get('filename', 'data.csv')
             fmt      = data.get('format', 'csv')
             if fmt == 'xlsx':
-                if not _XLSX_OK:
-                    self._json({'ok': False, 'error': 'openpyxl not installed — run: pip install openpyxl'}); return
-                try:
-                    raw = base64.b64decode(data.get('content', ''))
-                    state.headers, state.rows = _parse_xlsx(raw)
-                    state.filetype = 'xlsx'
-                except Exception as e:
-                    print(f'[xlsx load error] {e}')
-                    self._json({'ok': False, 'error': str(e)}); return
+                # xlsx is parsed client-side by SheetJS; server receives plain {headers, rows}
+                state.headers  = data.get('headers', [])
+                state.rows     = data.get('rows', [])
+                state.filetype = 'xlsx'
             else:
                 content  = data.get('content', '')
                 reader   = csv.reader(io.StringIO(content))
