@@ -1127,12 +1127,30 @@ function openFile() {
   inp.click();
 }
 
+async function _buildSaveBody(filepath) {
+  const isXlsx = (filepath || '').toLowerCase().endsWith('.xlsx') || S.filetype === 'xlsx';
+  if (isXlsx) {
+    // Build xlsx in browser with SheetJS, send as base64 so server just writes bytes
+    const all = await fetch('/api/all-sheets').then(r => r.json());
+    const wb  = XLSX.utils.book_new();
+    all.sheets.forEach(sh => {
+      const ws = XLSX.utils.aoa_to_sheet([sh.headers, ...sh.rows]);
+      XLSX.utils.book_append_sheet(wb, ws, sh.name);
+    });
+    const u8  = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+    const b64 = btoa(String.fromCharCode(...u8));
+    return JSON.stringify({ filepath, raw_bytes: b64 });
+  }
+  return JSON.stringify({ filepath });
+}
+
 async function saveFile() {
   await syncNow();
-  const res = await fetch('/api/save', {
+  const body = await _buildSaveBody(S.filepath);
+  const res  = await fetch('/api/save', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ filepath: S.filepath })
+    body
   });
   const data = await res.json();
   if (data.ok) {
@@ -1140,11 +1158,9 @@ async function saveFile() {
     S.modified = false;
     updateStatus();
   } else if (data.error === 'no_path') {
-    // No path known — ask where to save
     saveAs();
   } else {
     alert('Save failed: ' + data.error);
-    downloadFile();
   }
 }
 
@@ -1152,10 +1168,11 @@ async function saveAs() {
   await syncNow();
   prompt_('Save to path (leave blank to download as ' + (S.filetype || 'csv').toUpperCase() + '):', S.filepath || '', async path => {
     if (!path) { downloadFile(); return; }
+    const body = await _buildSaveBody(path);
     const res = await fetch('/api/save', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ filepath: path })
+      body
     });
     const data = await res.json();
     if (data.ok) { S.filepath = data.filepath; S.filetype = data.filetype || S.filetype; S.modified = false; updateStatus(); }
@@ -1829,17 +1846,14 @@ class Handler(BaseHTTPRequestHandler):
                 p = Path(filepath)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 if p.suffix.lower() == '.xlsx':
-                    if not _XLSX_OK:
-                        self._json({'ok': False, 'error': 'openpyxl not installed — run: pip install openpyxl'}); return
-                    wb = openpyxl.Workbook()
-                    wb.remove(wb.active)  # remove default sheet
-                    for sh in state.sheets:
-                        ws = wb.create_sheet(title=sh['name'])
-                        ws.append(sh['headers'])
-                        for row in sh['rows']:
-                            ws.append([_str_to_cell(c) for c in row])
-                    buf = io.BytesIO(); wb.save(buf)
-                    p.write_bytes(buf.getvalue())
+                    # xlsx bytes are generated client-side by SheetJS and written
+                    # via /api/save-bytes — this branch handles CSV-only saves
+                    # (fallback: if raw_bytes provided here, write them directly)
+                    raw_b64 = data.get('raw_bytes')
+                    if raw_b64:
+                        p.write_bytes(base64.b64decode(raw_b64))
+                    else:
+                        self._json({'ok': False, 'error': 'xlsx_needs_bytes'}); return
                     state.filetype = 'xlsx'
                 else:
                     with open(filepath, 'w', newline='', encoding='utf-8') as f:
