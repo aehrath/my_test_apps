@@ -1148,37 +1148,38 @@ async function _buildXlsxBytes() {
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
 }
 
-async function _buildSaveBody(filepath) {
-  const isXlsx = (filepath || '').toLowerCase().endsWith('.xlsx') ||
-                 (S.filetype || '').toLowerCase() === 'xlsx';
-  if (isXlsx) {
-    try {
-      const u8  = await _buildXlsxBytes();
-      const b64 = _u8ToBase64(u8);
-      return JSON.stringify({ filepath, raw_bytes: b64 });
-    } catch (err) {
-      alert('Could not build xlsx: ' + err.message);
-      throw err;
-    }
-  }
-  return JSON.stringify({ filepath });
-}
-
-async function saveFile() {
-  let body;
-  try {
-    body = await _buildSaveBody(S.filepath);
-  } catch (e) { return; }
-  const res  = await fetch('/api/save', {
+async function _saveXlsx(filepath) {
+  // Post xlsx bytes directly as binary (avoids JSON base64 encoding issues)
+  let u8;
+  try { u8 = await _buildXlsxBytes(); }
+  catch (err) { alert('Could not build xlsx: ' + err.message); return false; }
+  const url = '/api/save-xlsx?filepath=' + encodeURIComponent(filepath || '');
+  const res = await fetch(url, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: new Uint8Array(u8)
   });
   const data = await res.json();
   if (data.ok) {
-    S.filepath = data.filepath;
-    S.modified = false;
-    updateStatus();
+    S.filepath = data.filepath; S.filetype = 'xlsx'; S.modified = false; updateStatus();
+    return true;
+  }
+  alert('Save failed: ' + data.error);
+  return false;
+}
+
+async function saveFile() {
+  const isXlsx = (S.filepath || '').toLowerCase().endsWith('.xlsx') || S.filetype === 'xlsx';
+  if (isXlsx) { await _saveXlsx(S.filepath); return; }
+  await syncNow();
+  const res = await fetch('/api/save', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ filepath: S.filepath })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    S.filepath = data.filepath; S.modified = false; updateStatus();
   } else if (data.error === 'no_path') {
     saveAs();
   } else {
@@ -1187,15 +1188,14 @@ async function saveFile() {
 }
 
 async function saveAs() {
-  await syncNow();
   prompt_('Save to path (leave blank to download as ' + (S.filetype || 'csv').toUpperCase() + '):', S.filepath || '', async path => {
     if (!path) { downloadFile(); return; }
-    let body;
-    try { body = await _buildSaveBody(path); } catch (e) { return; }
+    const isXlsx = path.toLowerCase().endsWith('.xlsx');
+    if (isXlsx) { await _saveXlsx(path); return; }
+    await syncNow();
     const res = await fetch('/api/save', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filepath: path })
     });
     const data = await res.json();
     if (data.ok) { S.filepath = data.filepath; S.filetype = data.filetype || S.filetype; S.modified = false; updateStatus(); }
@@ -1848,6 +1848,25 @@ class Handler(BaseHTTPRequestHandler):
                 state.filetype     = 'csv'
             state.filepath = filename
             self._json({'ok': True})
+
+        elif self.path.startswith('/api/save-xlsx'):
+            qs       = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            filepath = qs.get('filepath', [''])[0] or state.filepath or ''
+            if not filepath:
+                self._json({'ok': False, 'error': 'no_path'}); return
+            if '/' not in filepath and '\\' not in filepath:
+                filepath = str(Path.cwd() / filepath)
+            try:
+                if not body:
+                    self._json({'ok': False, 'error': 'no data received'}); return
+                p = Path(filepath)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(body)   # body is raw xlsx bytes (octet-stream)
+                state.filepath = filepath
+                state.filetype = 'xlsx'
+                self._json({'ok': True, 'filepath': filepath})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
 
         elif self.path == '/api/update':
             state.headers = data.get('headers', state.headers)
