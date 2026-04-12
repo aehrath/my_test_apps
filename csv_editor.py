@@ -1599,13 +1599,44 @@ function buildInlineDiffMapping(curH, curR, commitH, commitR) {
   return { mapping, incomingRows };
 }
 
+// Parse a /api/github/version response into {headers, rows}
+function _parseVersionData(data) {
+  if (data.format === 'xlsx') {
+    if (data.rawB64) {
+      // Server sent raw bytes — parse with SheetJS in browser
+      const bin = atob(data.rawB64);
+      const u8  = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const wb  = XLSX.read(u8, { type: 'array', cellDates: true });
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      if (!ws || !ws['!ref']) return { headers: [], rows: [] };
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      const rows2d = [];
+      for (let r = range.s.r; r <= range.e.r; r++) {
+        const cells = [];
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const cell = ws[XLSX.utils.encode_cell({ r, c })];
+          if (!cell) { cells.push(''); continue; }
+          if (cell.t === 'b') cells.push(cell.v ? 'TRUE' : 'FALSE');
+          else if (cell.w != null) cells.push(cell.w);
+          else if (cell.v != null) cells.push(String(cell.v));
+          else cells.push('');
+        }
+        rows2d.push(cells);
+      }
+      while (rows2d.length && rows2d[rows2d.length-1].every(c => c==='')) rows2d.pop();
+      return { headers: rows2d[0] || [], rows: rows2d.slice(1) };
+    }
+    return { headers: data.headers || [], rows: data.rows || [] };
+  }
+  return parseCSV(data.content);
+}
+
 async function showDiff(sha, label) {
   const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
   if (data.error) { alert('Could not fetch version: ' + data.error); return; }
 
-  const { headers: commitH, rows: commitR } = data.format === 'xlsx'
-    ? { headers: data.headers, rows: data.rows }
-    : parseCSV(data.content);
+  const { headers: commitH, rows: commitR } = _parseVersionData(data);
   _diffVersion = { sha, headers: commitH, rows: commitR };
 
   const { mapping, incomingRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
@@ -1646,9 +1677,7 @@ async function loadVersion(sha) {
   if (!confirm('Replace current data with this version? Unsaved changes will be lost.')) return;
   const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
   if (data.error) { alert('Error: ' + data.error); return; }
-  const { headers, rows } = data.format === 'xlsx'
-    ? { headers: data.headers, rows: data.rows }
-    : parseCSV(data.content);
+  const { headers, rows } = _parseVersionData(data);
   S.headers = headers; S.rows = rows;
   setBaseline(headers, rows);
   selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
@@ -1979,15 +2008,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({'error': err}); return
             raw_bytes = base64.b64decode(result['content'].replace('\n', ''))
             if path.lower().endswith('.xlsx'):
-                if not _XLSX_OK:
-                    self._json({'error': 'openpyxl not installed — run: pip install openpyxl'}); return
-                try:
-                    headers, rows = _parse_xlsx(raw_bytes)
-                    self._json({'headers': headers, 'rows': rows, 'sha': sha, 'format': 'xlsx'})
-                except Exception as e:
-                    self._json({'error': str(e)})
+                # Return raw bytes as base64 — browser parses with SheetJS (no openpyxl needed)
+                self._json({'rawB64': base64.b64encode(raw_bytes).decode('ascii'), 'sha': sha, 'format': 'xlsx'})
             else:
-                content = raw_bytes.decode('utf-8-sig')
+                try:
+                    content = raw_bytes.decode('utf-8-sig')
+                except UnicodeDecodeError:
+                    content = raw_bytes.decode('latin-1')
                 self._json({'content': content, 'sha': sha, 'format': 'csv'})
         else:
             self._send(404, b'Not found')
