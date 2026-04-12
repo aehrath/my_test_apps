@@ -81,13 +81,17 @@ def _parse_xlsx(raw_bytes):
         raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
     wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
     ws = wb.active
+    if ws is None:
+        # Workbook has no active sheet — try first sheet
+        if not wb.sheetnames:
+            return [], []
+        ws = wb[wb.sheetnames[0]]
     all_rows = []
-    for row in ws.iter_rows():
+    for row in ws.iter_rows(values_only=False):
         cells = [_cell_to_str(cell.value) for cell in row]
-        all_rows.append(cells)
-    # Trim trailing fully-blank rows
-    while all_rows and all(v == '' for v in all_rows[-1]):
-        all_rows.pop()
+        # Skip rows that are entirely blank
+        if any(v != '' for v in cells):
+            all_rows.append(cells)
     if not all_rows:
         return [], []
     n_cols = max(len(r) for r in all_rows)
@@ -1023,27 +1027,33 @@ function openFile() {
     const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
     let body;
     if (isXlsx) {
-      const buf = await file.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let bin = '';
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      body = JSON.stringify({ content: btoa(bin), filename: file.name, format: 'xlsx' });
+      // Use FileReader for reliable binary→base64 on any file size
+      const b64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload  = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      body = JSON.stringify({ content: b64, filename: file.name, format: 'xlsx' });
     } else {
       const content = await file.text();
       body = JSON.stringify({ content, filename: file.name, format: 'csv' });
     }
-    const res = await fetch('/api/load-content', {
+    const res  = await fetch('/api/load-content', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body
     });
-    if (res.ok) {
+    const json = await res.json();
+    if (json.ok) {
       S = await fetch('/api/data').then(r => r.json());
       setBaseline(S.headers, S.rows);
       sortCol = -1; sortAsc = true;
       resetSelection();
       clearSearch();
       render();
+    } else {
+      alert('Failed to load file: ' + (json.error || 'unknown error'));
     }
   };
   inp.click();
@@ -1628,6 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
                     state.headers, state.rows = _parse_xlsx(raw)
                     state.filetype = 'xlsx'
                 except Exception as e:
+                    print(f'[xlsx load error] {e}')
                     self._json({'ok': False, 'error': str(e)}); return
             else:
                 content  = data.get('content', '')
