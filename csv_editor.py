@@ -30,10 +30,26 @@ except ImportError:
 
 class State:
     def __init__(self):
-        self.headers: list = []
-        self.rows: list = []
-        self.filepath = None
-        self.filetype: str = 'csv'   # 'csv' or 'xlsx'
+        self.sheets       = [{'name': 'Sheet1', 'headers': [], 'rows': []}]
+        self.active_sheet = 0
+        self.filepath     = None
+        self.filetype     = 'csv'
+
+    @property
+    def headers(self):
+        return self.sheets[self.active_sheet]['headers']
+
+    @headers.setter
+    def headers(self, v):
+        self.sheets[self.active_sheet]['headers'] = v
+
+    @property
+    def rows(self):
+        return self.sheets[self.active_sheet]['rows']
+
+    @rows.setter
+    def rows(self, v):
+        self.sheets[self.active_sheet]['rows'] = v
 
 state = State()
 
@@ -499,6 +515,44 @@ HTML = r"""<!DOCTYPE html>
     border-color: #2c3e50;
   }
   .modal-btns button.primary:hover { background: #3d5166; }
+
+/* ── Sheet tabs ── */
+#sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 8px 0;
+  background: #e8eaed;
+  border-top: 1px solid #ccc;
+  flex-shrink: 0;
+  overflow-x: auto;
+  min-height: 30px;
+}
+.sheet-tab {
+  padding: 4px 14px;
+  background: #d0d3d8;
+  border: 1px solid #bbb;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  user-select: none;
+  color: #444;
+}
+.sheet-tab:hover { background: #e2e5ea; }
+.sheet-tab.active { background: #fff; color: #111; font-weight: 600; border-color: #aaa; }
+.sheet-tab-add {
+  padding: 3px 10px;
+  background: none;
+  border: 1px dashed #bbb;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  font-size: 14px;
+  color: #888;
+  line-height: 1;
+}
+.sheet-tab-add:hover { background: #d8dbe0; color: #333; }
 </style>
 </head>
 <body>
@@ -536,6 +590,10 @@ HTML = r"""<!DOCTYPE html>
     <thead><tr id="header-row"></tr></thead>
     <tbody id="table-body"></tbody>
   </table>
+</div>
+
+<div id="sheet-tabs">
+  <button class="sheet-tab-add" onclick="addSheet()" title="Add sheet">+</button>
 </div>
 
 <div id="statusbar">
@@ -650,6 +708,7 @@ function render() {
   renderRows();
   updateStatus();
   autoResize();
+  renderSheetTabs();
 }
 
 // ── Auto-resize columns to fit content ─────────────────────────────────────
@@ -1028,22 +1087,22 @@ function openFile() {
     const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
     let body;
     if (isXlsx) {
-      // Parse xlsx in the browser with SheetJS — no server-side dependency needed
       const buf = await file.arrayBuffer();
       const wb  = XLSX.read(buf, { type: 'array', cellText: false, cellDates: true });
-      const ws  = wb.Sheets[wb.SheetNames[0]];
-      // sheet_to_json with header:1 gives array-of-arrays; defval fills empty cells
-      const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-      // Format cell values: dates → YYYY-MM-DD, numbers → clean strings
       const fmt = v => {
         if (v instanceof Date) return v.toISOString().slice(0, 10);
         if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v);
         return String(v ?? '');
       };
-      const rows2d = data.map(r => r.map(fmt));
-      const headers = rows2d[0] || [];
-      const rows    = rows2d.slice(1).filter(r => r.some(c => c !== ''));
-      body = JSON.stringify({ headers, rows, filename: file.name, format: 'xlsx' });
+      const sheets = wb.SheetNames.map(name => {
+        const ws   = wb.Sheets[name];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        const rows2d = data.map(r => r.map(fmt));
+        const headers = rows2d[0] || [];
+        const rows    = rows2d.slice(1).filter(r => r.some(c => c !== ''));
+        return { name, headers, rows };
+      });
+      body = JSON.stringify({ sheets, filename: file.name, format: 'xlsx' });
     } else {
       const content = await file.text();
       body = JSON.stringify({ content, filename: file.name, format: 'csv' });
@@ -1106,11 +1165,12 @@ async function downloadFile(fmt) {
   fmt = fmt || S.filetype || 'csv';
   const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx)$/i, '');
   if (fmt === 'xlsx') {
-    // Build xlsx entirely in the browser with SheetJS — no server dependency
-    const data = [S.headers, ...S.rows];
-    const ws   = XLSX.utils.aoa_to_sheet(data);
+    const all  = await fetch('/api/all-sheets').then(r => r.json());
     const wb   = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    all.sheets.forEach(sh => {
+      const ws = XLSX.utils.aoa_to_sheet([sh.headers, ...sh.rows]);
+      XLSX.utils.book_append_sheet(wb, ws, sh.name);
+    });
     XLSX.writeFile(wb, base + '.xlsx');
   } else {
     const res = await fetch('/api/export', {
@@ -1571,6 +1631,75 @@ function modalCancel() {
   document.getElementById('modal-overlay').classList.remove('open');
   _modalResolve = null;
 }
+
+// ── Sheet tabs ──────────────────────────────────────────────────────────────
+function renderSheetTabs() {
+  const bar = document.getElementById('sheet-tabs');
+  // Remove existing tabs (keep the + button)
+  [...bar.querySelectorAll('.sheet-tab')].forEach(t => t.remove());
+  const addBtn = bar.querySelector('.sheet-tab-add');
+  (S.sheets || []).forEach((sh, i) => {
+    const tab = document.createElement('div');
+    tab.className = 'sheet-tab' + (i === S.activeSheet ? ' active' : '');
+    tab.textContent = sh.name;
+    tab.title = 'Click to switch \u2022 Double-click to rename';
+    tab.onclick = () => switchSheet(i);
+    tab.ondblclick = (e) => { e.stopPropagation(); renameSheet(i, sh.name); };
+    // Right-click context for delete
+    tab.oncontextmenu = (e) => {
+      e.preventDefault();
+      if ((S.sheets || []).length > 1 && confirm(`Delete sheet "${sh.name}"?`)) deleteSheet(i);
+    };
+    bar.insertBefore(tab, addBtn);
+  });
+}
+
+async function switchSheet(idx) {
+  if (idx === S.activeSheet) return;
+  await syncNow();
+  await fetch('/api/switch-sheet', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ index: idx })
+  });
+  S = await fetch('/api/data').then(r => r.json());
+  setBaseline(S.headers, S.rows);
+  resetSelection(); clearSearch();
+  render();
+}
+
+async function addSheet() {
+  await syncNow();
+  const res  = await fetch('/api/add-sheet', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+  const data = await res.json();
+  S = await fetch('/api/data').then(r => r.json());
+  setBaseline(S.headers, S.rows);
+  resetSelection(); clearSearch();
+  render();
+}
+
+async function renameSheet(idx, current) {
+  prompt_('Rename sheet:', current, async name => {
+    if (!name || name === current) return;
+    await fetch('/api/rename-sheet', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ index: idx, name })
+    });
+    S.sheets[idx].name = name;
+    renderSheetTabs();
+  });
+}
+
+async function deleteSheet(idx) {
+  await syncNow();
+  await fetch('/api/delete-sheet', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ index: idx })
+  });
+  S = await fetch('/api/data').then(r => r.json());
+  setBaseline(S.headers, S.rows);
+  resetSelection(); clearSearch();
+  render();
+}
 </script>
 </body>
 </html>
@@ -1586,11 +1715,15 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_html()
         elif self.path == '/api/data':
             self._json({
-                'headers':  state.headers,
-                'rows':     state.rows,
-                'filepath': state.filepath,
-                'filetype': state.filetype,
+                'headers':     state.headers,
+                'rows':        state.rows,
+                'filepath':    state.filepath,
+                'filetype':    state.filetype,
+                'sheets':      [{'name': s['name']} for s in state.sheets],
+                'activeSheet': state.active_sheet,
             })
+        elif self.path == '/api/all-sheets':
+            self._json({'sheets': state.sheets, 'activeSheet': state.active_sheet})
         elif self.path == '/api/github/config':
             self._json({
                 'token':       ('*' * 4 + gh.token[-4:]) if len(gh.token) > 4 else ('*' * len(gh.token)),
@@ -1649,24 +1782,29 @@ class Handler(BaseHTTPRequestHandler):
             filename = data.get('filename', 'data.csv')
             fmt      = data.get('format', 'csv')
             if fmt == 'xlsx':
-                # xlsx is parsed client-side by SheetJS; server receives plain {headers, rows}
-                state.headers  = data.get('headers', [])
-                state.rows     = data.get('rows', [])
-                state.filetype = 'xlsx'
+                # xlsx is parsed client-side by SheetJS; server receives {sheets: [{name, headers, rows}]}
+                raw_sheets = data.get('sheets', [])
+                if not raw_sheets:
+                    raw_sheets = [{'name': 'Sheet1', 'headers': [], 'rows': []}]
+                state.sheets       = raw_sheets
+                state.active_sheet = 0
+                state.filetype     = 'xlsx'
             else:
                 content  = data.get('content', '')
                 reader   = csv.reader(io.StringIO(content))
                 all_rows = list(reader)
                 if all_rows:
-                    state.headers = all_rows[0]
-                    state.rows    = [list(r) for r in all_rows[1:]]
-                    for row in state.rows:
-                        while len(row) < len(state.headers):
+                    state_headers = all_rows[0]
+                    state_rows    = [list(r) for r in all_rows[1:]]
+                    for row in state_rows:
+                        while len(row) < len(state_headers):
                             row.append('')
                 else:
-                    state.headers = []
-                    state.rows    = []
-                state.filetype = 'csv'
+                    state_headers = []
+                    state_rows    = []
+                state.sheets       = [{'name': 'Sheet1', 'headers': state_headers, 'rows': state_rows}]
+                state.active_sheet = 0
+                state.filetype     = 'csv'
             state.filepath = filename
             self._json({'ok': True})
 
@@ -1686,7 +1824,15 @@ class Handler(BaseHTTPRequestHandler):
                 if p.suffix.lower() == '.xlsx':
                     if not _XLSX_OK:
                         self._json({'ok': False, 'error': 'openpyxl not installed — run: pip install openpyxl'}); return
-                    p.write_bytes(_write_xlsx(state.headers, state.rows))
+                    wb = openpyxl.Workbook()
+                    wb.remove(wb.active)  # remove default sheet
+                    for sh in state.sheets:
+                        ws = wb.create_sheet(title=sh['name'])
+                        ws.append(sh['headers'])
+                        for row in sh['rows']:
+                            ws.append([_str_to_cell(c) for c in row])
+                    buf = io.BytesIO(); wb.save(buf)
+                    p.write_bytes(buf.getvalue())
                     state.filetype = 'xlsx'
                 else:
                     with open(filepath, 'w', newline='', encoding='utf-8') as f:
@@ -1724,6 +1870,38 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Length', str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
+
+        elif self.path == '/api/switch-sheet':
+            idx = int(data.get('index', 0))
+            if 0 <= idx < len(state.sheets):
+                state.active_sheet = idx
+            self._json({'ok': True})
+
+        elif self.path == '/api/add-sheet':
+            name = data.get('name', '').strip()
+            if not name:
+                existing = {s['name'] for s in state.sheets}
+                i = len(state.sheets) + 1
+                while f'Sheet{i}' in existing:
+                    i += 1
+                name = f'Sheet{i}'
+            state.sheets.append({'name': name, 'headers': list(state.headers) if state.headers else [], 'rows': []})
+            state.active_sheet = len(state.sheets) - 1
+            self._json({'ok': True, 'index': state.active_sheet, 'name': name})
+
+        elif self.path == '/api/rename-sheet':
+            idx  = int(data.get('index', state.active_sheet))
+            name = data.get('name', '').strip()
+            if name and 0 <= idx < len(state.sheets):
+                state.sheets[idx]['name'] = name
+            self._json({'ok': True})
+
+        elif self.path == '/api/delete-sheet':
+            idx = int(data.get('index', state.active_sheet))
+            if len(state.sheets) > 1 and 0 <= idx < len(state.sheets):
+                state.sheets.pop(idx)
+                state.active_sheet = min(state.active_sheet, len(state.sheets) - 1)
+            self._json({'ok': True})
 
         elif self.path == '/api/github/config':
             gh.token  = data.get('token',  gh.token)
@@ -1812,18 +1990,25 @@ def main():
                     print('Error: openpyxl is required to open .xlsx files.')
                     print('       pip install openpyxl')
                     sys.exit(1)
-                state.headers, state.rows = _parse_xlsx(path.read_bytes())
-                state.filetype = 'xlsx'
+                headers, rows = _parse_xlsx(path.read_bytes())
+                state.sheets       = [{'name': 'Sheet1', 'headers': headers, 'rows': rows}]
+                state.active_sheet = 0
+                state.filetype     = 'xlsx'
             else:
                 with open(path, newline='', encoding='utf-8-sig') as f:
                     rows = list(csv.reader(f))
                 if rows:
-                    state.headers = rows[0]
-                    state.rows    = [list(r) for r in rows[1:]]
-                    for row in state.rows:
-                        while len(row) < len(state.headers):
+                    headers = rows[0]
+                    parsed_rows = [list(r) for r in rows[1:]]
+                    for row in parsed_rows:
+                        while len(row) < len(headers):
                             row.append('')
-                state.filetype = 'csv'
+                else:
+                    headers = []
+                    parsed_rows = []
+                state.sheets       = [{'name': 'Sheet1', 'headers': headers, 'rows': parsed_rows}]
+                state.active_sheet = 0
+                state.filetype     = 'csv'
             state.filepath = str(path)
         else:
             print(f'File not found: {path}')
