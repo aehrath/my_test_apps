@@ -196,6 +196,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <title>CSV Editor</title>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -683,8 +684,9 @@ HTML = r"""<!DOCTYPE html>
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
 let S = { headers: [], rows: [], filepath: null, modified: false };
-let _xlsxWb = null;   // original SheetJS workbook kept in memory to preserve cell styles
-let _cellStyles = null; // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
+let _xlsxWb = null;      // ExcelJS workbook loaded lazily at save time (for style preservation)
+let _xlsxOrigBuf = null; // original file ArrayBuffer — ExcelJS reloads from this at save time
+let _cellStyles = null;  // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
 let selectedRows = new Set();   // indices of selected rows
 let selectedCols = new Set();   // indices of selected columns
 let anchorRow = -1;             // shift-click anchor
@@ -1110,114 +1112,79 @@ function openFile() {
     if (!file) return;
     const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
     let body;
+    let sheets;  // declared here so it's accessible in the if (json.ok) block below
     if (isXlsx) {
-      let wb;
-      try {
-        const buf = await file.arrayBuffer();
-        wb = new ExcelJS.Workbook();
-        await wb.xlsx.load(buf);
-        console.log('[open] ExcelJS loaded, sheets:', wb.worksheets.map(w => w.name));
-      } catch(err) {
-        console.error('[open] ExcelJS load error:', err);
-        alert('Failed to parse Excel file: ' + err.message);
-        return;
-      }
-      _xlsxWb = wb;  // keep for style-preserving save
+      let buf;
+      try { buf = await file.arrayBuffer(); }
+      catch(err) { alert('Failed to read file: ' + err.message); return; }
+      _xlsxOrigBuf = buf;  // keep raw bytes so ExcelJS can reload at save time
+      _xlsxWb = null;       // reset; loaded lazily on first save
 
-      // Recursively unwrap any ExcelJS cell value to a plain string
-      const fmt = v => {
-        if (v === null || v === undefined) return '';
-        if (v instanceof Date) return v.toISOString().slice(0, 10);
-        if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-        if (typeof v === 'object') {
-          if (v.richText)  return v.richText.map(r => r.text).join('');  // rich text
-          if ('result' in v) return fmt(v.result);   // formula cell — use cached result
-          return '';
-        }
-        if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v);
-        return String(v);
-      };
+      // SheetJS reads cell values correctly in browser; ExcelJS cannot (returns empty values)
+      let sjWb;
+      try { sjWb = XLSX.read(new Uint8Array(buf), { type: 'array', cellStyles: true, cellDates: true }); }
+      catch(err) { alert('Failed to parse Excel file: ' + err.message); return; }
 
-      const sheets = wb.worksheets.map(ws => {
-        // Find actual column count across all rows
-        let maxCol = 0;
-        ws.eachRow(row => { if (row.cellCount > maxCol) maxCol = row.cellCount; });
+      sheets = sjWb.SheetNames.map(name => {
+        const ws = sjWb.Sheets[name];
+        const ref = ws['!ref'];
+        if (!ref) return { name, headers: [], rows: [], headerStyles: [], rowStyles: [] };
+        const range = XLSX.utils.decode_range(ref);
+        const rows2d = [], styles2d = [];
 
-        const argbToRgba = argb => {
-          if (!argb || argb.length < 6) return null;
-          // ARGB format: AARRGGBB or RRGGBB
-          const hex = argb.length === 8 ? argb.slice(2) : argb;
-          return '#' + hex;
-        };
-
-        const extractStyle = cell => {
-          const s = {};
-          const f = cell.font || {};
-          const a = cell.alignment || {};
-          const fill = cell.fill || {};
-
-          // Background
-          if (fill.type === 'pattern' && fill.pattern !== 'none' && fill.fgColor) {
-            const bg = argbToRgba(fill.fgColor.argb || fill.fgColor.rgb || '');
-            if (bg) s.bg = bg;
-          }
-          // Font color
-          if (f.color) {
-            const fc = argbToRgba(f.color.argb || f.color.rgb || '');
-            if (fc) s.color = fc;
-          }
-          // Font style
-          if (f.bold)   s.bold = true;
-          if (f.italic) s.italic = true;
-          if (f.size)   s.fontSize = f.size;
-          if (f.name)   s.fontFamily = f.name;
-          // Alignment
-          if (a.horizontal) s.align = a.horizontal;  // left, center, right
-          if (a.wrapText)   s.wrap = true;
-
-          return Object.keys(s).length ? s : null;
-        };
-
-        const rows2d = [];
-        const styles2d = [];
-        ws.eachRow({ includeEmpty: true }, row => {
-          const cells = [];
-          const rowStyles = [];
-          for (let c = 1; c <= maxCol; c++) {
-            const cell = row.getCell(c);
-            const isSlave = cell.isMerged && cell.master.address !== cell.address;
-            cells.push(isSlave ? '' : fmt(cell.value));
-            rowStyles.push(isSlave ? null : extractStyle(cell));
+        for (let r = range.s.r; r <= range.e.r; r++) {
+          const cells = [], rowSt = [];
+          for (let c = range.s.c; c <= range.e.c; c++) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            const cell = ws[addr];
+            if (!cell) { cells.push(''); rowSt.push(null); continue; }
+            // Value — prefer formatted text (cell.w) for numbers/dates; use raw for booleans
+            let val = '';
+            if (cell.t === 'b') val = cell.v ? 'TRUE' : 'FALSE';
+            else if (cell.w != null) val = cell.w;
+            else if (cell.v != null) val = String(cell.v);
+            cells.push(val);
+            // Style — SheetJS populates cell.s when cellStyles: true
+            const s   = cell.s    || {};
+            const fill = s.fill   || {};
+            const font = s.font   || {};
+            const aln  = s.alignment || {};
+            const st = {};
+            if (fill.fgColor && fill.fgColor.rgb) st.bg = '#' + fill.fgColor.rgb.slice(-6);
+            if (font.color  && font.color.rgb)    st.color = '#' + font.color.rgb.slice(-6);
+            if (font.bold)   st.bold = true;
+            if (font.italic) st.italic = true;
+            if (font.sz)     st.fontSize = font.sz;
+            if (font.name)   st.fontFamily = font.name;
+            if (aln.horizontal) st.align = aln.horizontal;
+            rowSt.push(Object.keys(st).length ? st : null);
           }
           rows2d.push(cells);
-          styles2d.push(rowStyles);
-        });
+          styles2d.push(rowSt);
+        }
         // Trim trailing blank rows
         while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
         const headers = rows2d[0] || [];
         const rows    = rows2d.slice(1);
-        return { name: ws.name, headers, rows, headerStyles: styles2d[0] || [], rowStyles: styles2d.slice(1) };
+        return { name, headers, rows, headerStyles: styles2d[0] || [], rowStyles: styles2d.slice(1) };
       });
-      // Send only data to server (no styles — keep payload small)
+
       const sheetsData = sheets.map(sh => ({ name: sh.name, headers: sh.headers, rows: sh.rows }));
       body = JSON.stringify({ sheets: sheetsData, filename: file.name, format: 'xlsx' });
     } else {
+      _xlsxOrigBuf = null;
       _xlsxWb = null;
       const content = await file.text();
       body = JSON.stringify({ content, filename: file.name, format: 'csv' });
     }
-    console.log('[open] body size:', body.length, 'isXlsx:', isXlsx);
     const res  = await fetch('/api/load-content', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body
     });
-    console.log('[open] response status:', res.status);
     const json = await res.json();
-    console.log('[open] response json:', json);
     if (json.ok) {
       S = await fetch('/api/data').then(r => r.json());
-      console.log('[open] S.headers:', S.headers, 'S.rows.length:', S.rows.length);
       if (isXlsx) {
         _cellStyles = { headerStyles: sheets[0].headerStyles || [], rowStyles: sheets[0].rowStyles || [] };
       } else {
@@ -1239,6 +1206,12 @@ async function _buildXlsxBytes() {
   // Flush active sheet edits to server first
   await syncNow();
   const all = await fetch('/api/all-sheets').then(r => r.json());
+
+  // Lazily load ExcelJS from the original file bytes (preserves styles)
+  if (!_xlsxWb && _xlsxOrigBuf) {
+    _xlsxWb = new ExcelJS.Workbook();
+    await _xlsxWb.xlsx.load(_xlsxOrigBuf);
+  }
 
   if (_xlsxWb) {
     // Update values in-place in the original ExcelJS workbook — styles are preserved
