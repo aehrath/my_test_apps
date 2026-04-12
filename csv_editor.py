@@ -263,7 +263,7 @@ HTML = r"""<!DOCTYPE html>
   tbody td.cell-diff-changed .old-val {
     display:block; font-size:10px; color:#aaa; text-decoration:line-through;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-    line-height:1.2; margin-top:1px; pointer-events:none;
+    line-height:1.2; margin-bottom:1px; pointer-events:none;
   }
 
   /* ── Status bar ── */
@@ -707,8 +707,8 @@ function renderRows() {
         }
       });
       inp.addEventListener('keydown', onCellKeyDown);
-      td.appendChild(inp);
       if (oldValLabel) td.appendChild(oldValLabel);
+      td.appendChild(inp);
       tr.appendChild(td);
     });
 
@@ -1287,26 +1287,26 @@ function computeDiff(oldR, newR) {
       { ops.unshift({t:'-', o:oldR[i-1]}); i--; }
   }
 
-  // Pair consecutive runs of - and + using similarity matching, then emit in
-  // commit order so incoming (+) rows land at the correct position between pairs.
+  // Collect consecutive runs of + and - (in any order) and pair by similarity.
+  // Unpaired + = truly new incoming row. Unpaired - = truly deleted ghost row.
+  function cellSim(r1, r2) {
+    let m = 0;
+    for (let i = 0; i < Math.min(r1.length, r2.length); i++)
+      if ((r1[i] ?? '') === (r2[i] ?? '')) m++;
+    return m;
+  }
   const result = []; let k = 0;
   while (k < ops.length) {
-    if (ops[k].t === '-') {
-      const dels = [], adds = [];
-      while (k < ops.length && ops[k].t === '-') dels.push(ops[k++]);
-      while (k < ops.length && ops[k].t === '+') adds.push(ops[k++]);
-
-      // Similarity-based matching: pair each del with its most similar add
-      function cellSim(r1, r2) {
-        let m = 0;
-        for (let i = 0; i < Math.min(r1.length, r2.length); i++)
-          if ((r1[i] ?? '') === (r2[i] ?? '')) m++;
-        return m;
+    if (ops[k].t === '+' || ops[k].t === '-') {
+      const adds = [], dels = [];
+      while (k < ops.length && (ops[k].t === '+' || ops[k].t === '-')) {
+        if (ops[k].t === '+') adds.push(ops[k++]);
+        else dels.push(ops[k++]);
       }
       const usedAdd = new Set();
       const pairedAdd = new Array(dels.length).fill(-1); // pairedAdd[d] = add index
       dels.forEach((del, d) => {
-        let bestA = -1, bestSim = 0;
+        let bestA = -1, bestSim = 0;          // bestSim=0 means "must beat 0 to pair"
         adds.forEach((add, a) => {
           if (usedAdd.has(a)) return;
           const s = cellSim(del.o, add.n);
@@ -1315,26 +1315,22 @@ function computeDiff(oldR, newR) {
         if (bestA >= 0) { pairedAdd[d] = bestA; usedAdd.add(bestA); }
       });
 
-      // Reverse map: add index → del index
+      // Build reverse map: add index → del index (for paired adds)
       const delForAdd = new Map();
       pairedAdd.forEach((a, d) => { if (a >= 0) delForAdd.set(a, d); });
-
-      // Emit in commit order (iterate adds), interleaving unpaired dels at the
-      // right current-row position so incoming rows get the correct beforeCurIdx.
+      // Emit in commit order (adds order) so incoming rows land at the right position
       let nextDel = 0;
       adds.forEach((add, a) => {
         if (delForAdd.has(a)) {
           const d = delForAdd.get(a);
-          // Emit any unpaired dels that come before this paired del (current order)
-          while (nextDel < d) result.push(dels[nextDel++]);
+          while (nextDel < d) result.push(dels[nextDel++]); // unpaired dels before this pair
           result.push({ t:'~', o:dels[d].o, n:add.n });
           nextDel = d + 1;
         } else {
-          result.push(add); // truly new row
+          result.push(add); // truly new row — emitted in commit order
         }
       });
-      // Emit remaining unpaired dels (truly deleted)
-      while (nextDel < dels.length) result.push(dels[nextDel++]);
+      while (nextDel < dels.length) result.push(dels[nextDel++]); // remaining unpaired dels
     } else {
       result.push(ops[k++]);
     }
