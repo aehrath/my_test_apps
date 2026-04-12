@@ -1186,10 +1186,56 @@ function openFile() {
         _xlsxOrigBuf = buf;  // fallback: reload lazily at save time
       }
 
-      const argbToHex = argb => {
-        if (!argb || argb.length < 6) return null;
-        const hex = argb.length === 8 ? argb.slice(2) : argb;
-        return /^[0-9a-fA-F]{6}$/.test(hex) ? '#' + hex : null;
+      // Extract theme palette from ExcelJS internals (_themes contains the XML)
+      let themeColors = null;
+      if (ejWb && ejWb._themes) {
+        try {
+          const xml = Object.values(ejWb._themes)[0];
+          if (xml) {
+            const doc = new DOMParser().parseFromString(xml, 'application/xml');
+            const scheme = doc.querySelector('clrScheme');
+            if (scheme) {
+              const ORDER = ['dk1','lt1','dk2','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+              themeColors = ORDER.map(tag => {
+                const el = scheme.querySelector(tag);
+                if (!el) return '000000';
+                return el.querySelector('srgbClr')?.getAttribute('val')
+                    || el.querySelector('sysClr')?.getAttribute('lastClr')
+                    || '000000';
+              });
+            }
+          }
+        } catch(e) { themeColors = null; }
+      }
+
+      // Resolve an ExcelJS color object {argb?, theme?, tint?} to CSS #RRGGBB
+      const resolveColor = c => {
+        if (!c) return null;
+        if (c.argb) {
+          const hex = c.argb.length === 8 ? c.argb.slice(2) : c.argb;
+          return /^[0-9a-fA-F]{6}$/.test(hex) ? '#' + hex : null;
+        }
+        if (c.theme != null && themeColors) {
+          let base = themeColors[c.theme] || '000000';
+          const tint = c.tint || 0;
+          if (tint !== 0) {
+            // Excel tint in HLS: tint>0 lightens, tint<0 darkens
+            const r = parseInt(base.slice(0,2),16)/255,
+                  g = parseInt(base.slice(2,4),16)/255,
+                  b = parseInt(base.slice(4,6),16)/255;
+            const max=Math.max(r,g,b), min=Math.min(r,g,b);
+            let h=0, s=0, l=(max+min)/2;
+            if (max!==min){const d=max-min;s=l>0.5?d/(2-max-min):d/(max+min);if(max===r)h=((g-b)/d+(g<b?6:0))/6;else if(max===g)h=((b-r)/d+2)/6;else h=((r-g)/d+4)/6;}
+            l = tint>=0 ? l*(1-tint)+tint : l*(1+tint);
+            l = Math.max(0,Math.min(1,l));
+            const q=l<0.5?l*(1+s):l+s-l*s, p=2*l-q;
+            const h2r=(p,q,t)=>{if(t<0)t+=1;if(t>1)t-=1;if(t<1/6)return p+(q-p)*6*t;if(t<.5)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;};
+            const nr=s?h2r(p,q,h+1/3):l, ng=s?h2r(p,q,h):l, nb=s?h2r(p,q,h-1/3):l;
+            base=[nr,ng,nb].map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');
+          }
+          return '#' + base;
+        }
+        return null;
       };
 
       sheets = sjWb.SheetNames.map(name => {
@@ -1213,7 +1259,7 @@ function openFile() {
             else if (cell.v != null) val = String(cell.v);
             cells.push(val);
 
-            // Style from ExcelJS — resolves theme colors to real ARGB hex
+            // Style from ExcelJS — resolves theme colors via resolveColor()
             let st = null;
             if (ejWs) {
               const ejCell = ejWs.getCell(r + 1, c + 1);
@@ -1221,14 +1267,12 @@ function openFile() {
               const font = ejCell.font      || {};
               const aln  = ejCell.alignment || {};
               const s = {};
-              if (fill.type === 'pattern' && fill.pattern !== 'none' && fill.fgColor?.argb) {
-                const bg = argbToHex(fill.fgColor.argb);
+              if (fill.type === 'pattern' && fill.pattern !== 'none') {
+                const bg = resolveColor(fill.fgColor);
                 if (bg) s.bg = bg;
               }
-              if (font.color?.argb) {
-                const fc = argbToHex(font.color.argb);
-                if (fc) s.color = fc;
-              }
+              const fc = resolveColor(font.color);
+              if (fc) s.color = fc;
               if (font.bold)       s.bold = true;
               if (font.italic)     s.italic = true;
               if (font.size)       s.fontSize = font.size;
