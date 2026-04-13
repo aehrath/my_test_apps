@@ -1,0 +1,1851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSV Editor</title>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    background: #f0f2f5;
+    color: #222;
+  }
+
+  /* ── Toolbar ── */
+  #toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    background: #2c3e50;
+    color: #fff;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  #toolbar button {
+    background: #3d5166;
+    color: #fff;
+    border: 1px solid #4a6278;
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  #toolbar button:hover { background: #4e6a84; }
+  #toolbar button:active { background: #5a7a96; }
+
+  .sep { width: 1px; height: 24px; background: #4a6278; margin: 0 4px; }
+
+  #search-input {
+    padding: 4px 8px;
+    border: 1px solid #4a6278;
+    border-radius: 4px;
+    background: #3d5166;
+    color: #fff;
+    font-size: 12px;
+    width: 160px;
+  }
+  #search-input::placeholder { color: #8aa; }
+  #search-input:focus { outline: none; background: #46607a; }
+
+  #filepath-display {
+    font-size: 11px;
+    color: #aac;
+    margin-left: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 300px;
+  }
+
+  /* ── Table container ── */
+  #table-wrap {
+    flex: 1;
+    overflow: auto;
+    background: #fff;
+    margin: 6px;
+    border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.15);
+  }
+
+  table {
+    border-collapse: collapse;
+    min-width: 100%;
+    table-layout: fixed;
+  }
+
+  /* Header */
+  thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #dce8f7;
+    border: 1px solid #b8cfe8;
+    padding: 6px 8px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: none;
+    min-width: 100px;
+  }
+  thead th:hover { background: #c8d8ee; }
+  thead th.row-num { min-width: 42px; width: 42px; cursor: default; text-align: center; }
+
+  /* Rows */
+  tbody tr.even { background: #fff; }
+  tbody tr.odd  { background: #f6f9ff; }
+  tbody tr:hover { background: #edf3fc; }
+  tbody tr.selected-row { background: #d6e8ff !important; }
+
+  thead th.selected-col { background: #a8c4e8; }
+  tbody td.selected-col { background: rgba(100,160,255,.10); }
+  tbody tr.selected-row td.selected-col { background: rgba(80,140,255,.30) !important; }
+
+  tbody td {
+    border: 1px solid #dde;
+    padding: 0;
+    height: 28px;
+  }
+  tbody td.row-num {
+    text-align: center;
+    color: #888;
+    font-size: 11px;
+    background: #f0f0f0;
+    border-right: 2px solid #ccc;
+    cursor: pointer;
+    user-select: none;
+  }
+  tbody td.row-num:hover { background: #e0e0e0; }
+
+  tbody td input {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: transparent;
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 13px;
+    color: #222;
+    outline: none;
+    display: block;
+  }
+  tbody td input:focus {
+    background: #e8f0fe;
+    outline: 2px solid #4a90d9;
+    outline-offset: -2px;
+    border-radius: 2px;
+  }
+  tbody td.highlight input { background: #fff3a0; }
+  tbody td.highlight input:focus { background: #ffe060; }
+
+  /* cells that differ from the last-committed / last-loaded baseline */
+  tbody td.cell-modified { background: #fff3b0 !important; }
+  tbody td.cell-modified input { background: transparent; }
+  tbody td.cell-modified input:focus { background: #fff0a0; }
+
+  /* ── Inline diff ── */
+  #diff-banner { display:none; align-items:center; gap:10px; padding:5px 12px;
+    background:#1e3a5f; color:#9fc8f0; font-size:12px; flex-shrink:0; }
+  #diff-banner.open { display:flex; }
+  #diff-banner strong { color:#7ab8e8; font-family:monospace; }
+  #diff-banner .diff-stats { color:#aad; }
+  #diff-banner button { margin-left:auto; background:transparent; border:1px solid #4a6278;
+    color:#9fc8f0; border-radius:3px; padding:1px 10px; cursor:pointer; font-size:11px; }
+  #diff-banner button:hover { background:#2a4a6e; }
+  tbody tr.row-diff-added > td { background:#efffef !important; }   /* locally added */
+  tbody tr.row-diff-ghost > td { background:#f8f8f8 !important; color:#bbb; pointer-events:none; }  /* deleted locally, exists in commit */
+  tbody tr.row-diff-ghost > td.row-num { color:#ddd; }
+  tbody td.cell-diff-changed { background:#ffff00 !important; }
+  tbody td.cell-diff-changed input { background:transparent; color:inherit; }
+  tbody td.cell-diff-changed input:focus { background:#ffff33; }
+  tbody td.cell-diff-changed .old-val {
+    display:block; font-size:10px; color:#aaa; text-decoration:line-through;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    line-height:1.2; margin-bottom:1px; pointer-events:none;
+  }
+
+  /* ── Status bar ── */
+  #statusbar {
+    flex-shrink: 0;
+    padding: 3px 12px;
+    background: #2c3e50;
+    color: #aac;
+    font-size: 11px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ── GitHub panel ── */
+  #gh-panel {
+    position: fixed; top: 0; right: -380px; bottom: 0; width: 380px;
+    background: #1a2535; color: #c8d8e8;
+    display: flex; flex-direction: column;
+    box-shadow: -4px 0 20px rgba(0,0,0,.4);
+    transition: right .22s ease; z-index: 60;
+    font-size: 12px;
+  }
+  #gh-panel.open { right: 0; }
+  #gh-panel h2 { font-size: 13px; padding: 12px 14px 8px; background: #111d2b;
+    border-bottom: 1px solid #2a3d52; display: flex; align-items: center; gap: 8px; }
+  #gh-panel h2 span { flex: 1; }
+  #gh-panel h2 button { background: none; border: none; color: #888; cursor: pointer; font-size: 16px; }
+  #gh-panel h2 button:hover { color: #fff; }
+
+  .gh-tabs { display: flex; border-bottom: 1px solid #2a3d52; }
+  .gh-tab { flex: 1; padding: 7px; text-align: center; cursor: pointer;
+    color: #778899; border-bottom: 2px solid transparent; }
+  .gh-tab.active { color: #7ab8e8; border-bottom-color: #7ab8e8; }
+
+  .gh-body { flex: 1; overflow-y: auto; padding: 12px; }
+
+  .gh-field { margin-bottom: 10px; }
+  .gh-field label { display: block; font-size: 11px; color: #778899; margin-bottom: 3px; }
+  .gh-field input { width: 100%; padding: 5px 8px; background: #243447;
+    border: 1px solid #2e4460; border-radius: 4px; color: #c8d8e8; font-size: 12px; }
+  .gh-field input:focus { outline: none; border-color: #4a90d9; }
+
+  .gh-btn { display: block; width: 100%; padding: 7px; margin-top: 8px;
+    background: #2d6a9f; color: #fff; border: none; border-radius: 4px;
+    cursor: pointer; font-size: 12px; }
+  .gh-btn:hover { background: #3a7db5; }
+  .gh-btn.danger { background: #7a2d2d; }
+  .gh-btn.danger:hover { background: #9a3d3d; }
+  .gh-btn:disabled { background: #2a3d52; color: #556677; cursor: default; }
+
+  #gh-status { font-size: 11px; padding: 4px 0; }
+  #gh-status.ok  { color: #5cb85c; }
+  #gh-status.err { color: #e07070; }
+
+  .commit-item { padding: 8px 0; border-bottom: 1px solid #2a3d52; }
+  .commit-item:last-child { border: none; }
+  .commit-sha  { font-family: monospace; font-size: 11px; color: #7ab8e8; }
+  .commit-msg  { font-weight: 600; margin: 2px 0; line-height: 1.3; }
+  .commit-meta { font-size: 10px; color: #556677; }
+  .commit-actions { display: flex; gap: 5px; margin-top: 5px; }
+  .commit-actions button { flex: 1; padding: 3px 6px; font-size: 11px;
+    border: 1px solid #2e4460; background: #243447; color: #c8d8e8;
+    border-radius: 3px; cursor: pointer; }
+  .commit-actions button:hover { background: #2d5270; }
+
+  /* ── Diff overlay ── */
+  #diff-overlay {
+    display: none; position: fixed; inset: 0; z-index: 100;
+    flex-direction: column; background: #f0f2f5;
+  }
+  #diff-overlay.open { display: flex; }
+
+  #diff-toolbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; background: #2c3e50; color: #fff; flex-shrink: 0;
+  }
+  #diff-toolbar h3 { flex: 1; font-size: 13px; font-weight: 600; }
+  #diff-toolbar button { background: #3d5166; color: #fff; border: 1px solid #4a6278;
+    border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+  #diff-toolbar button:hover { background: #4e6a84; }
+
+  #diff-legend { display: flex; gap: 16px; padding: 6px 14px;
+    background: #e8edf2; border-bottom: 1px solid #ccc; font-size: 11px; flex-shrink: 0; }
+  .legend-dot { display: inline-block; width: 12px; height: 12px;
+    border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+  #diff-wrap { flex: 1; overflow: auto; }
+
+  #diff-table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+  #diff-table th { position: sticky; top: 0; background: #dce8f7;
+    border: 1px solid #b8cfe8; padding: 5px 8px; font-weight: 700;
+    text-align: left; white-space: nowrap; }
+  #diff-table td { border: 1px solid #dde; padding: 4px 8px;
+    white-space: pre-wrap; max-width: 300px; overflow: hidden;
+    text-overflow: ellipsis; }
+  #diff-table td.diff-marker { font-weight: 700; text-align: center;
+    width: 28px; font-family: monospace; }
+
+  tr.diff-added   td                { background: #d4edda; }
+  tr.diff-added   td.diff-marker    { background: #b8ddc2; color: #1a7a1a; }
+  tr.diff-removed td                { background: #fde0e0; text-decoration: line-through; color: #888; }
+  tr.diff-removed td.diff-marker    { background: #f5b8b8; color: #a00; }
+  tr.diff-modified-old td           { background: #fde0e0; color: #888; }
+  tr.diff-modified-old td.diff-marker { background: #f5b8b8; color: #a00; }
+  tr.diff-modified-new td           { background: #d4edda; }
+  tr.diff-modified-new td.diff-marker { background: #b8ddc2; color: #1a7a1a; }
+  td.cell-changed                   { background: #fff3a0 !important; font-weight: 600; color: #333 !important; }
+
+  /* ── Modal ── */
+  #modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.45);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #modal-overlay.open { display: flex; }
+  #modal-box {
+    background: #fff;
+    border-radius: 8px;
+    padding: 24px;
+    min-width: 320px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.25);
+  }
+  #modal-box h3 { margin-bottom: 12px; }
+  #modal-box input[type=text] {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+  #modal-box input[type=text]:focus { outline: 2px solid #4a90d9; }
+  .modal-btns { display: flex; gap: 8px; justify-content: flex-end; }
+  .modal-btns button {
+    padding: 6px 16px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .modal-btns button.primary {
+    background: #2c3e50;
+    color: #fff;
+    border-color: #2c3e50;
+  }
+  .modal-btns button.primary:hover { background: #3d5166; }
+
+/* ── Sheet tabs ── */
+#sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 8px 0;
+  background: #e8eaed;
+  border-top: 1px solid #ccc;
+  flex-shrink: 0;
+  overflow-x: auto;
+  min-height: 30px;
+}
+.sheet-tab {
+  padding: 4px 14px;
+  background: #d0d3d8;
+  border: 1px solid #bbb;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  user-select: none;
+  color: #444;
+}
+.sheet-tab:hover { background: #e2e5ea; }
+.sheet-tab.active { background: #fff; color: #111; font-weight: 600; border-color: #aaa; }
+.sheet-tab-add {
+  padding: 3px 10px;
+  background: none;
+  border: 1px dashed #bbb;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  font-size: 14px;
+  color: #888;
+  line-height: 1;
+}
+.sheet-tab-add:hover { background: #d8dbe0; color: #333; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <button onclick="openFile()">📂 Open</button>
+  <button onclick="saveFile()">💾 Save</button>
+  <button onclick="saveAs()">Save As…</button>
+  <button onclick="downloadFile('csv')"  title="Download as CSV">⬇ CSV</button>
+  <button onclick="downloadFile('xlsx')" title="Download as Excel">⬇ XLSX</button>
+  <div class="sep"></div>
+  <button onclick="addRow()">+ Row</button>
+  <button onclick="deleteSelectedRow()">− Row</button>
+  <button onclick="addColumn()">+ Col</button>
+  <button onclick="deleteColumn()">− Col</button>
+  <button onclick="renameColumn()">Rename Col</button>
+  <div class="sep"></div>
+  <button onclick="autoResize()" title="Fit each column to its widest content">⇔ Auto Resize</button>
+  <div class="sep"></div>
+  <input id="search-input" type="text" placeholder="🔍 Search…" oninput="applySearch(this.value)">
+  <button onclick="clearSearch()">✕</button>
+  <span id="filepath-display">Untitled</span>
+  <div class="sep"></div>
+  <button onclick="toggleGHPanel()" title="GitHub versioning">⎇ GitHub</button>
+</div>
+
+<div id="diff-banner">
+  <span>Comparing with <strong id="diff-banner-label"></strong></span>
+  <span class="diff-stats" id="diff-banner-stats"></span>
+  <button onclick="clearInlineDiff()" title="Exit diff view (Esc)">✕ Exit diff</button>
+</div>
+
+<div id="table-wrap">
+  <table id="csv-table">
+    <thead><tr id="header-row"></tr></thead>
+    <tbody id="table-body"></tbody>
+  </table>
+</div>
+
+<div id="sheet-tabs">
+  <button class="sheet-tab-add" onclick="addSheet()" title="Add sheet">+</button>
+</div>
+
+<div id="statusbar">
+  <span id="status-left">Ready</span>
+  <span id="status-right"></span>
+</div>
+
+<!-- ── GitHub panel ── -->
+<div id="gh-panel">
+  <h2>
+    <span>⎇ GitHub Versioning</span>
+    <button onclick="toggleGHPanel()" title="Close">✕</button>
+  </h2>
+  <div class="gh-tabs">
+    <div class="gh-tab active" id="tab-config"  onclick="ghTab('config')">Config</div>
+    <div class="gh-tab"        id="tab-history" onclick="ghTab('history')">History</div>
+    <div class="gh-tab"        id="tab-commit"  onclick="ghTab('commit')">Commit</div>
+  </div>
+
+  <!-- Config -->
+  <div class="gh-body" id="gh-config">
+    <div class="gh-field">
+      <label>Personal Access Token (repo scope)</label>
+      <input type="password" id="gh-token" placeholder="ghp_…">
+    </div>
+    <div class="gh-field">
+      <label>Repository (owner/repo)</label>
+      <input type="text" id="gh-repo" placeholder="username/my-data">
+    </div>
+    <div class="gh-field">
+      <label>Branch</label>
+      <input type="text" id="gh-branch" placeholder="main">
+    </div>
+    <div class="gh-field">
+      <label>File path in repo</label>
+      <input type="text" id="gh-path" placeholder="data/my_file.csv">
+    </div>
+    <button class="gh-btn" onclick="saveGHConfig()">Save Config</button>
+    <div id="gh-status"></div>
+  </div>
+
+  <!-- History -->
+  <div class="gh-body" id="gh-history" style="display:none">
+    <button class="gh-btn" onclick="loadHistory()" id="gh-load-btn">Load History</button>
+    <div id="gh-commits" style="margin-top:10px"></div>
+  </div>
+
+  <!-- Commit -->
+  <div class="gh-body" id="gh-commit" style="display:none">
+    <div class="gh-field">
+      <label>Commit message</label>
+      <input type="text" id="gh-commit-msg" placeholder="Update data">
+    </div>
+    <button class="gh-btn" onclick="doCommit()">Push Commit</button>
+    <div id="gh-commit-status" style="margin-top:8px;font-size:11px"></div>
+  </div>
+</div>
+
+<!-- ── Diff overlay ── -->
+<div id="diff-overlay">
+  <div id="diff-toolbar">
+    <h3 id="diff-title">Visual Diff</h3>
+    <button onclick="loadVersionIntoEditor()">Load this version</button>
+    <button onclick="closeDiff()">✕ Close</button>
+  </div>
+  <div id="diff-legend">
+    <span><span class="legend-dot" style="background:#b8ddc2"></span>Added</span>
+    <span><span class="legend-dot" style="background:#f5b8b8"></span>Removed</span>
+    <span><span class="legend-dot" style="background:#fff3a0"></span>Changed cell</span>
+    <span><span class="legend-dot" style="background:#fff"></span>Unchanged</span>
+  </div>
+  <div id="diff-wrap"><table id="diff-table"><thead></thead><tbody></tbody></table></div>
+</div>
+
+<!-- Generic text-input modal -->
+<div id="modal-overlay">
+  <div id="modal-box">
+    <h3 id="modal-title">Input</h3>
+    <input type="text" id="modal-input">
+    <div class="modal-btns">
+      <button onclick="modalCancel()">Cancel</button>
+      <button class="primary" onclick="modalOk()">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Excel theme-color helpers ──────────────────────────────────────────────
+// Extract the 12 base theme colors from SheetJS wb.Themes XML (e.g. dk1, lt1, accent1–6 …)
+function _parseThemeColors(wb) {
+  const xml = wb.Themes;
+  if (typeof xml !== 'string' || !xml) return null;
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const scheme = doc.querySelector('clrScheme');
+    if (!scheme) return null;
+    const ORDER = ['lt1','dk1','lt2','dk2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+    return ORDER.map(tag => {
+      const el = scheme.querySelector(tag);
+      if (!el) return '000000';
+      return el.querySelector('srgbClr')?.getAttribute('val')
+          || el.querySelector('sysClr')?.getAttribute('lastClr')
+          || '000000';
+    });
+  } catch(e) { return null; }
+}
+
+// Apply Excel luminance tint to an RRGGBB hex string (tint in -1..1)
+function _applyTint(hex, tint) {
+  if (!tint) return hex;
+  const r=parseInt(hex.slice(0,2),16)/255, g=parseInt(hex.slice(2,4),16)/255, b=parseInt(hex.slice(4,6),16)/255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b);
+  let h=0, s=0, l=(max+min)/2;
+  if (max!==min) {
+    const d=max-min;
+    s=l>0.5?d/(2-max-min):d/(max+min);
+    if(max===r)h=((g-b)/d+(g<b?6:0))/6;
+    else if(max===g)h=((b-r)/d+2)/6;
+    else h=((r-g)/d+4)/6;
+  }
+  l = tint>=0 ? l*(1-tint)+tint : l*(1+tint);
+  l = Math.max(0, Math.min(1, l));
+  const q=l<0.5?l*(1+s):l+s-l*s, p=2*l-q;
+  const hue2rgb=(p,q,t)=>{if(t<0)t+=1;if(t>1)t-=1;if(t<1/6)return p+(q-p)*6*t;if(t<.5)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;};
+  const nr=s?hue2rgb(p,q,h+1/3):l, ng=s?hue2rgb(p,q,h):l, nb=s?hue2rgb(p,q,h-1/3):l;
+  return [nr,ng,nb].map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');
+}
+
+// Resolve a SheetJS color object {rgb, theme, tint, indexed} to CSS #RRGGBB (or null)
+function _resolveColor(c, themeColors) {
+  if (!c) return null;
+  if (c.rgb)             return '#' + c.rgb.slice(-6);          // explicit RGB/ARGB
+  if (c.theme != null && themeColors)
+    return '#' + _applyTint(themeColors[c.theme] || '000000', c.tint || 0);
+  return null;   // indexed / auto — skip
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let S = { headers: [], rows: [], filepath: null, modified: false };
+let _xlsxWb = null;          // ExcelJS workbook for style-preserving save
+let _xlsxOrigBuf = null;     // original ArrayBuffer — reload ExcelJS lazily if load failed
+let _cellStyles = null;      // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
+let _xlsxSheetOffsets = {};  // { sheetName: {rowOff, colOff} } — Excel row/col where sheet data starts (1-based)
+let selectedRows = new Set();   // indices of selected rows
+let selectedCols = new Set();   // indices of selected columns
+let anchorRow = -1;             // shift-click anchor
+let anchorCol = -1;
+let _pendingMouseEvent = null;  // mousedown captured before focus fires
+let sortCol = -1;
+let sortAsc = true;
+let searchTerm = '';
+let highlightCells = new Set(); // "r,c"
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+(async function init() {
+  const res = await fetch('/api/data');
+  S = await res.json();
+  setBaseline(S.headers, S.rows);
+  render();
+  document.addEventListener('keydown', onKeyDown);
+})();
+
+// ── Rendering ──────────────────────────────────────────────────────────────
+function render() {
+  renderHeaders();
+  renderRows();
+  updateStatus();
+  autoResize();
+  renderSheetTabs();
+}
+
+// ── Auto-resize columns to fit content ─────────────────────────────────────
+const _measureCtx = document.createElement('canvas').getContext('2d'); // reused across calls
+function autoResize() {
+  const PAD = 28, MIN = 60, MAX = 500;
+  const ths = document.querySelectorAll('#header-row th');
+
+  S.headers.forEach((header, c) => {
+    _measureCtx.font = 'bold 13px Arial';
+    let maxPx = _measureCtx.measureText(header).width;
+
+    _measureCtx.font = '13px Arial';
+    for (const row of S.rows) {
+      const w = _measureCtx.measureText(row[c] ?? '').width;
+      if (w > maxPx) maxPx = w;
+    }
+
+    const width = Math.max(MIN, Math.min(MAX, Math.ceil(maxPx) + PAD));
+    const th = ths[c + 1]; // +1 to skip the row-number corner
+    if (th) {
+      th.style.width    = width + 'px';
+      th.style.minWidth = width + 'px';
+    }
+  });
+}
+
+function renderHeaders() {
+  const tr = document.getElementById('header-row');
+  tr.innerHTML = '';
+  const corner = th('#', 'row-num');
+  tr.appendChild(corner);
+
+  S.headers.forEach((h, i) => {
+    const el = document.createElement('th');
+    el.title = 'Click to sort/select • Shift/Cmd+click to multi-select • Double-click to rename';
+    el.style.minWidth = '120px';
+    if (selectedCols.has(i)) el.classList.add('selected-col');
+    const arrow = sortCol === i ? (sortAsc ? ' ▲' : ' ▼') : '';
+    el.textContent = h + arrow;
+    el.onclick = (e) => {
+      selectCol(i, e);
+      if (!e.shiftKey && !e.metaKey && !e.ctrlKey) sortBy(i);
+    };
+    el.ondblclick = (e) => { e.stopPropagation(); renameColumn(i); };
+    if (_cellStyles && _cellStyles.headerStyles[i]) {
+      const st = _cellStyles.headerStyles[i];
+      if (st) applyExcelStyle(el, null, st);
+    }
+    tr.appendChild(el);
+  });
+}
+
+function applyExcelStyle(td, inp, st) {
+  if (!st) return;
+  if (st.bg)         td.style.backgroundColor = st.bg;
+  if (st.color) {
+    td.style.color = st.color;
+    if (inp) inp.style.color = st.color;
+  }
+  if (st.bold)       { td.style.fontWeight = 'bold';   if (inp) inp.style.fontWeight = 'bold'; }
+  if (st.italic)     { td.style.fontStyle  = 'italic'; if (inp) inp.style.fontStyle  = 'italic'; }
+  if (st.fontSize)   { const px = Math.round(st.fontSize * 1.33) + 'px'; td.style.fontSize = px; if (inp) inp.style.fontSize = px; }
+  if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
+}
+
+function renderRows() {
+  const tbody = document.getElementById('table-body');
+  tbody.innerHTML = '';
+
+  // Index incoming (new-in-commit) rows by the current-row index they appear before
+  const ghostBefore = {};
+  if (_inlineDiff) {
+    _inlineDiff.ghostRows.forEach(g => {
+      (ghostBefore[g.beforeCurIdx] = ghostBefore[g.beforeCurIdx] || []).push(g);
+    });
+  }
+
+  function insertIncoming(beforeIdx) {
+    (ghostBefore[beforeIdx] || []).forEach(g => {
+      const tr = document.createElement('tr');
+      tr.className = 'row-diff-ghost';
+      const rn = document.createElement('td');
+      rn.className = 'row-num';
+      rn.textContent = '−';
+      tr.appendChild(rn);
+      S.headers.forEach((h, ci) => {
+        const td = document.createElement('td');
+        td.textContent = g.commitRow[ci] ?? '';
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  insertIncoming(0);
+
+  S.rows.forEach((row, r) => {
+    const entry = _inlineDiff ? (_inlineDiff.mapping[r] ?? { type: 'added' }) : null;
+    const tr = document.createElement('tr');
+    tr.className = r % 2 === 0 ? 'even' : 'odd';
+    if (selectedRows.has(r)) tr.classList.add('selected-row');
+    if (entry?.type === 'added') tr.classList.add('row-diff-added');
+
+    const rn = document.createElement('td');
+    rn.className = 'row-num';
+    rn.textContent = r + 1;
+    rn.title = 'Click • Shift+click to range • Cmd+click to toggle';
+    rn.addEventListener('mousedown', (e) => { e.preventDefault(); selectRow(r, e); });
+    tr.appendChild(rn);
+
+    S.headers.forEach((h, c) => {
+      const td = document.createElement('td');
+      const key = `${r},${c}`;
+      if (highlightCells.has(key)) td.classList.add('highlight');
+      if (selectedCols.has(c)) td.classList.add('selected-col');
+
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = row[c] != null ? row[c] : '';
+      inp.dataset.r = r;
+      inp.dataset.c = c;
+
+      // Baseline (unsaved-edit) highlight
+      const bv0 = baselineVal(r, c);
+      if (bv0 === undefined || inp.value !== bv0) td.classList.add('cell-modified');
+
+      // Inline diff: show commit value in yellow, strike through current value
+      let oldValLabel = null;
+      if (entry?.type === 'changed') {
+        const commitVal = entry.commitRow?.[c] ?? '';
+        const curVal = row[c] ?? '';
+        if (curVal !== commitVal) {
+          td.classList.add('cell-diff-changed');
+          inp.value = commitVal;
+          oldValLabel = document.createElement('span');
+          oldValLabel.className = 'old-val';
+          oldValLabel.textContent = curVal;
+        }
+      }
+
+      td.addEventListener('mousedown', (e) => { _pendingMouseEvent = e; });
+      inp.addEventListener('focus', () => {
+        selectCell(r, c, _pendingMouseEvent);
+        _pendingMouseEvent = null;
+      });
+      inp.addEventListener('input', () => {
+        S.rows[r][c] = inp.value;
+        markModified();
+        const bv = baselineVal(r, c);
+        td.classList.toggle('cell-modified', bv === undefined || inp.value !== bv);
+        if (entry?.type === 'changed') {
+          const commitVal = entry.commitRow?.[c] ?? '';
+          const changed = inp.value !== commitVal;
+          td.classList.toggle('cell-diff-changed', changed);
+          if (oldValLabel) oldValLabel.style.display = changed ? '' : 'none';
+        }
+      });
+      inp.addEventListener('keydown', onCellKeyDown);
+      if (oldValLabel) td.appendChild(oldValLabel);
+      td.appendChild(inp);
+      // Apply Excel cell style if available
+      if (_cellStyles && _cellStyles.rowStyles[r]) {
+        const st = _cellStyles.rowStyles[r][c];
+        if (st) applyExcelStyle(td, inp, st);
+      }
+      tr.appendChild(td);
+    });
+
+    tbody.appendChild(tr);
+    insertIncoming(r + 1);
+  });
+}
+
+function th(text, cls) {
+  const el = document.createElement('th');
+  el.textContent = text;
+  if (cls) el.className = cls;
+  return el;
+}
+
+// ── Selection ──────────────────────────────────────────────────────────────
+function resetSelection() {
+  selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
+}
+
+function _applyRange(set, anchor, target, max) {
+  set.clear();
+  const lo = Math.min(anchor, target), hi = Math.max(anchor, target);
+  for (let i = lo; i <= hi; i++) set.add(i);
+}
+
+function selectRow(r, e) {
+  if (e && e.shiftKey && anchorRow >= 0) {
+    _applyRange(selectedRows, anchorRow, r, S.rows.length - 1);
+  } else if (e && (e.metaKey || e.ctrlKey)) {
+    if (selectedRows.has(r)) selectedRows.delete(r); else { selectedRows.add(r); anchorRow = r; }
+  } else {
+    selectedRows = new Set([r]);
+    anchorRow = r;
+  }
+  updateSelectionUI();
+}
+
+function selectCol(c, e) {
+  if (e && e.shiftKey && anchorCol >= 0) {
+    _applyRange(selectedCols, anchorCol, c, S.headers.length - 1);
+  } else if (e && (e.metaKey || e.ctrlKey)) {
+    if (selectedCols.has(c)) selectedCols.delete(c); else { selectedCols.add(c); anchorCol = c; }
+  } else {
+    selectedCols = new Set([c]);
+    anchorCol = c;
+  }
+  updateSelectionUI();
+}
+
+function selectCell(r, c, e) {
+  if (e && e.shiftKey) {
+    if (anchorRow >= 0) _applyRange(selectedRows, anchorRow, r, S.rows.length - 1);
+    else { selectedRows = new Set([r]); anchorRow = r; }
+    if (anchorCol >= 0) _applyRange(selectedCols, anchorCol, c, S.headers.length - 1);
+    else { selectedCols = new Set([c]); anchorCol = c; }
+  } else if (e && (e.metaKey || e.ctrlKey)) {
+    if (selectedRows.has(r)) selectedRows.delete(r); else { selectedRows.add(r); anchorRow = r; }
+    if (selectedCols.has(c)) selectedCols.delete(c); else { selectedCols.add(c); anchorCol = c; }
+  } else {
+    selectedRows = new Set([r]); anchorRow = r;
+    selectedCols = new Set([c]); anchorCol = c;
+  }
+  updateSelectionUI();
+}
+
+function updateSelectionUI() {
+  // Rows
+  document.querySelectorAll('#table-body tr').forEach((tr, i) =>
+    tr.classList.toggle('selected-row', selectedRows.has(i)));
+  // Columns — clear then re-apply
+  document.querySelectorAll('.selected-col').forEach(el => el.classList.remove('selected-col'));
+  selectedCols.forEach(c => {
+    const nth = c + 2; // +1 for row-num col, +1 for 1-based nth-child
+    document.querySelectorAll(`#header-row th:nth-child(${nth}), #table-body td:nth-child(${nth})`)
+      .forEach(el => el.classList.add('selected-col'));
+  });
+  updateStatus();
+}
+
+// ── Keyboard navigation ────────────────────────────────────────────────────
+function onCellKeyDown(e) {
+  const r = +e.target.dataset.r;
+  const c = +e.target.dataset.c;
+  const cols = S.headers.length;
+  const rows = S.rows.length;
+  let nr = r, nc = c;
+
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    nc = e.shiftKey ? c - 1 : c + 1;
+    if (nc < 0)  { nc = cols - 1; nr = r - 1; }
+    if (nc >= cols) { nc = 0; nr = r + 1; }
+  } else if (e.key === 'ArrowDown'  && !e.altKey) { nr = r + 1; }
+    else if (e.key === 'ArrowUp'    && !e.altKey) { nr = r - 1; }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      nr = e.shiftKey ? r - 1 : r + 1;
+    } else { return; }
+
+  nr = Math.max(0, Math.min(nr, rows - 1));
+  nc = Math.max(0, Math.min(nc, cols - 1));
+  focusCell(nr, nc);
+}
+
+function onKeyDown(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    e.preventDefault();
+    e.shiftKey ? saveAs() : saveFile();
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'o') { e.preventDefault(); openFile(); }
+  if (e.key === 'Escape' && _inlineDiff) { e.preventDefault(); clearInlineDiff(); }
+}
+
+function focusCell(r, c) {
+  // Set selection directly (keyboard nav = single-select, no mouse event)
+  selectedRows = new Set([r]); anchorRow = r;
+  selectedCols = new Set([c]); anchorCol = c;
+  const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+  if (inp) { inp.focus(); inp.select(); }
+  // focus will fire selectCell(r,c,null) which collapses to single-select — that's fine
+}
+
+// ── Data operations ────────────────────────────────────────────────────────
+function addRow() {
+  const insertAt = selectedRows.size > 0 ? Math.max(...selectedRows) + 1 : S.rows.length;
+  S.rows.splice(insertAt, 0, Array(S.headers.length).fill(''));
+  // Insert null into baseline so the new row shows as modified, while rows
+  // below keep their correct baseline values and don't appear changed
+  baseline.rows.splice(insertAt, 0, null);
+  selectedRows = new Set([insertAt]); anchorRow = insertAt;
+  markModified();
+  renderRows();
+  focusCell(insertAt, selectedCols.size > 0 ? Math.min(...selectedCols) : 0);
+}
+
+function deleteSelectedRow() {
+  if (S.rows.length === 0 || selectedRows.size === 0) return;
+  const toDelete = [...selectedRows].sort((a, b) => b - a); // reverse so splices don't shift
+  const label = toDelete.length === 1 ? `row ${toDelete[0] + 1}` : `${toDelete.length} rows`;
+  if (!confirm(`Delete ${label}?`)) return;
+  toDelete.forEach(r => {
+    S.rows.splice(r, 1);
+    // Keep baseline in sync so rows below the deletion don't appear modified
+    baseline.rows.splice(r, 1);
+  });
+  const next = S.rows.length > 0 ? Math.min(Math.min(...toDelete), S.rows.length - 1) : -1;
+  selectedRows = next >= 0 ? new Set([next]) : new Set(); anchorRow = next;
+  markModified();
+  renderRows();
+  if (next >= 0) focusCell(next, selectedCols.size > 0 ? Math.min(...selectedCols) : 0);
+  updateStatus();
+}
+
+function addColumn() {
+  const insertAt = selectedCols.size > 0 ? Math.max(...selectedCols) + 1 : S.headers.length;
+  prompt_('New column name', '', name => {
+    if (!name) return;
+    S.headers.splice(insertAt, 0, name);
+    S.rows.forEach(row => row.splice(insertAt, 0, ''));
+    selectedCols = new Set([insertAt]); anchorCol = insertAt;
+    markModified();
+    render();
+    if (selectedRows.size > 0) focusCell(Math.min(...selectedRows), insertAt);
+  });
+}
+
+function deleteColumn() {
+  if (S.headers.length === 0 || selectedCols.size === 0) return;
+  const toDelete = [...selectedCols].sort((a, b) => b - a);
+  const label = toDelete.length === 1
+    ? `column "${S.headers[toDelete[0]]}"`
+    : `${toDelete.length} columns (${toDelete.map(c => S.headers[c]).join(', ')})`;
+  if (!confirm(`Delete ${label}?`)) return;
+  toDelete.forEach(c => { S.headers.splice(c, 1); S.rows.forEach(row => row.splice(c, 1)); });
+  const next = S.headers.length > 0 ? Math.min(Math.min(...toDelete), S.headers.length - 1) : -1;
+  selectedCols = next >= 0 ? new Set([next]) : new Set(); anchorCol = next;
+  markModified();
+  render();
+}
+
+function renameColumn(idx) {
+  idx = idx != null ? idx : (selectedCols.size > 0 ? Math.min(...selectedCols) : 0);
+  const old = S.headers[idx];
+  prompt_(`Rename "${old}" to:`, old, name => {
+    if (!name) return;
+    S.headers[idx] = name;
+    markModified();
+    renderHeaders();
+    autoResize();
+  });
+}
+
+function sortBy(col) {
+  if (sortCol === col) sortAsc = !sortAsc;
+  else { sortCol = col; sortAsc = true; }
+  S.rows.sort((a, b) => {
+    const av = a[col] || '', bv = b[col] || '';
+    const an = parseFloat(av), bn = parseFloat(bv);
+    const cmp = !isNaN(an) && !isNaN(bn) ? an - bn : av.localeCompare(bv);
+    return sortAsc ? cmp : -cmp;
+  });
+  markModified();
+  render();
+}
+
+// ── Search ─────────────────────────────────────────────────────────────────
+function applySearch(term) {
+  searchTerm = term.toLowerCase();
+  highlightCells.clear();
+  if (searchTerm) {
+    S.rows.forEach((row, r) => {
+      row.forEach((val, c) => {
+        if ((val || '').toLowerCase().includes(searchTerm)) highlightCells.add(`${r},${c}`);
+      });
+    });
+  }
+  renderRows();
+  const count = highlightCells.size;
+  document.getElementById('status-right').textContent =
+    searchTerm ? `${count} match${count !== 1 ? 'es' : ''}` : '';
+}
+
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  applySearch('');
+}
+
+// ── File operations ────────────────────────────────────────────────────────
+function openFile() {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.csv,.tsv,.txt,.xlsx';
+  inp.onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+    let body;
+    let sheets;  // declared here so it's accessible in the if (json.ok) block below
+    if (isXlsx) {
+      let buf;
+      try { buf = await file.arrayBuffer(); }
+      catch(err) { alert('Failed to read file: ' + err.message); return; }
+      // SheetJS: reads cell values correctly in the browser
+      let sjWb;
+      try { sjWb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true }); }
+      catch(err) { alert('Failed to parse Excel file: ' + err.message); return; }
+
+      // ExcelJS: reads styles with fully-resolved theme colors (ARGB).
+      // Cell values come back null in the browser, but styles are correct — that's all we need here.
+      // We also keep the workbook as _xlsxWb so save can update values in-place (preserving styles).
+      let ejWb = null;
+      try {
+        ejWb = new ExcelJS.Workbook();
+        await ejWb.xlsx.load(buf);
+        _xlsxWb = ejWb;
+        _xlsxOrigBuf = null;  // no longer needed — workbook is already loaded
+      } catch(err) {
+        _xlsxWb = null;
+        _xlsxOrigBuf = buf;  // fallback: reload lazily at save time
+      }
+
+      // Extract theme palette from ExcelJS internals (_themes contains the XML)
+      let themeColors = null;
+      if (ejWb && ejWb._themes) {
+        try {
+          const xml = Object.values(ejWb._themes)[0];
+          if (xml) {
+            const doc = new DOMParser().parseFromString(xml, 'application/xml');
+            const scheme = doc.querySelector('clrScheme');
+            if (scheme) {
+              // Theme indices: 0=lt1, 1=dk1, 2=lt2, 3=dk2, 4-9=accent1-6, 10=hlink, 11=folHlink
+              // XML clrScheme lists them as dk1,lt1,dk2,lt2,... so we query by name not by position
+              const ORDER = ['lt1','dk1','lt2','dk2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+              themeColors = ORDER.map(tag => {
+                const el = scheme.querySelector(tag);
+                if (!el) return '000000';
+                return el.querySelector('srgbClr')?.getAttribute('val')
+                    || el.querySelector('sysClr')?.getAttribute('lastClr')
+                    || '000000';
+              });
+            }
+          }
+        } catch(e) { themeColors = null; }
+      }
+
+      // Resolve an ExcelJS color object {argb?, theme?, tint?} to CSS #RRGGBB
+      const resolveColor = c => {
+        if (!c) return null;
+        if (c.argb) {
+          const hex = c.argb.length === 8 ? c.argb.slice(2) : c.argb;
+          return /^[0-9a-fA-F]{6}$/.test(hex) ? '#' + hex : null;
+        }
+        if (c.theme != null && themeColors) {
+          let base = themeColors[c.theme] || '000000';
+          const tint = c.tint || 0;
+          if (tint !== 0) {
+            // Excel tint in HLS: tint>0 lightens, tint<0 darkens
+            const r = parseInt(base.slice(0,2),16)/255,
+                  g = parseInt(base.slice(2,4),16)/255,
+                  b = parseInt(base.slice(4,6),16)/255;
+            const max=Math.max(r,g,b), min=Math.min(r,g,b);
+            let h=0, s=0, l=(max+min)/2;
+            if (max!==min){const d=max-min;s=l>0.5?d/(2-max-min):d/(max+min);if(max===r)h=((g-b)/d+(g<b?6:0))/6;else if(max===g)h=((b-r)/d+2)/6;else h=((r-g)/d+4)/6;}
+            l = tint>=0 ? l*(1-tint)+tint : l*(1+tint);
+            l = Math.max(0,Math.min(1,l));
+            const q=l<0.5?l*(1+s):l+s-l*s, p=2*l-q;
+            const h2r=(p,q,t)=>{if(t<0)t+=1;if(t>1)t-=1;if(t<1/6)return p+(q-p)*6*t;if(t<.5)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;};
+            const nr=s?h2r(p,q,h+1/3):l, ng=s?h2r(p,q,h):l, nb=s?h2r(p,q,h-1/3):l;
+            base=[nr,ng,nb].map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');
+          }
+          return '#' + base;
+        }
+        return null;
+      };
+
+      _xlsxSheetOffsets = {};
+      sheets = sjWb.SheetNames.map(name => {
+        const ws   = sjWb.Sheets[name];
+        const ejWs = ejWb ? ejWb.getWorksheet(name) : null;
+        const ref  = ws['!ref'];
+        if (!ref) return { name, headers: [], rows: [], headerStyles: [], rowStyles: [] };
+        const range = XLSX.utils.decode_range(ref);
+        // Store 1-based Excel row/col where this sheet's data starts
+        _xlsxSheetOffsets[name] = { rowOff: range.s.r + 1, colOff: range.s.c + 1, origRowCount: range.e.r - range.s.r + 1 };
+        const rows2d = [], styles2d = [];
+
+        for (let r = range.s.r; r <= range.e.r; r++) {
+          const cells = [], rowSt = [];
+          for (let c = range.s.c; c <= range.e.c; c++) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            const cell = ws[addr];
+            if (!cell) { cells.push(''); rowSt.push(null); continue; }
+            // Value from SheetJS — prefer formatted text; raw for booleans
+            let val = '';
+            if (cell.t === 'b') val = cell.v ? 'TRUE' : 'FALSE';
+            else if (cell.w != null) val = cell.w;
+            else if (cell.v != null) val = String(cell.v);
+            cells.push(val);
+
+            // Style from ExcelJS — resolves theme colors via resolveColor()
+            let st = null;
+            if (ejWs) {
+              // ExcelJS uses 1-based row/col matching Excel coordinates
+              const ejCell = ejWs.getCell(r + 1, c + 1);
+              const fill = ejCell.fill      || {};
+              const font = ejCell.font      || {};
+              const aln  = ejCell.alignment || {};
+              const s = {};
+              if (fill.type === 'pattern' && fill.pattern !== 'none') {
+                const bg = resolveColor(fill.fgColor);
+                if (bg) s.bg = bg;
+              }
+              const fc = resolveColor(font.color);
+              if (fc) s.color = fc;
+              if (font.bold)       s.bold = true;
+              if (font.italic)     s.italic = true;
+              if (font.size)       s.fontSize = font.size;
+              if (font.name)       s.fontFamily = font.name;
+              if (aln.horizontal)  s.align = aln.horizontal;
+              st = Object.keys(s).length ? s : null;
+            }
+            rowSt.push(st);
+          }
+          rows2d.push(cells);
+          styles2d.push(rowSt);
+        }
+        // Trim trailing blank rows
+        while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
+        const headers = rows2d[0] || [];
+        const rows    = rows2d.slice(1);
+        return { name, headers, rows, headerStyles: styles2d[0] || [], rowStyles: styles2d.slice(1) };
+      });
+
+      const sheetsData = sheets.map(sh => ({ name: sh.name, headers: sh.headers, rows: sh.rows }));
+      body = JSON.stringify({ sheets: sheetsData, filename: file.name, format: 'xlsx' });
+    } else {
+      _xlsxOrigBuf = null;
+      _xlsxWb = null;
+      const content = await file.text();
+      body = JSON.stringify({ content, filename: file.name, format: 'csv' });
+    }
+    const res  = await fetch('/api/load-content', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body
+    });
+    const json = await res.json();
+    if (json.ok) {
+      S = await fetch('/api/data').then(r => r.json());
+      if (isXlsx) {
+        _cellStyles = { headerStyles: sheets[0].headerStyles || [], rowStyles: sheets[0].rowStyles || [] };
+      } else {
+        _cellStyles = null;
+      }
+      setBaseline(S.headers, S.rows);
+      sortCol = -1; sortAsc = true;
+      resetSelection();
+      clearSearch();
+      render();
+    } else {
+      alert('Failed to load file: ' + (json.error || 'unknown error'));
+    }
+  };
+  inp.click();
+}
+
+async function _buildXlsxBytes() {
+  // Flush active sheet edits to server first
+  await syncNow();
+  const all = await fetch('/api/all-sheets').then(r => r.json());
+
+  // If ExcelJS failed to load at open time, retry now from the saved buffer
+  if (!_xlsxWb && _xlsxOrigBuf) {
+    try {
+      _xlsxWb = new ExcelJS.Workbook();
+      await _xlsxWb.xlsx.load(_xlsxOrigBuf);
+      _xlsxOrigBuf = null;
+    } catch(e) { _xlsxWb = null; }
+  }
+
+  if (_xlsxWb) {
+    // Update values in-place in the original ExcelJS workbook — styles are preserved
+    all.sheets.forEach(sh => {
+      let ws = _xlsxWb.getWorksheet(sh.name);
+      if (!ws) ws = _xlsxWb.addWorksheet(sh.name);
+      const data = [sh.headers || [], ...(sh.rows || [])];
+      // Use the stored offset so we write back to the same Excel rows/cols the data came from
+      const off = _xlsxSheetOffsets[sh.name] || { rowOff: 1, colOff: 1 };
+      data.forEach((row, ri) => {
+        const excelRow = off.rowOff + ri;
+        row.forEach((val, ci) => {
+          const cell = ws.getCell(excelRow, off.colOff + ci);
+          // Update value only — cell.style is untouched so fill/font are preserved
+          // Only coerce to number if round-tripping is lossless: "0805" → 805 → "805" ≠ "0805" → keep string
+          const n = val === '' || val == null ? null : Number(val);
+          cell.value = (n != null && !isNaN(n) && String(n) === val.trim()) ? n : (val === '' ? null : val);
+        });
+        // Clear any cells beyond the new column count (deleted columns)
+        const oldColCount = ws.getRow(excelRow).cellCount;
+        for (let ci = row.length; ci < oldColCount; ci++)
+          ws.getCell(excelRow, off.colOff + ci).value = null;
+      });
+      // Clear rows that were inside the original data range but have since been deleted.
+      // We only clear up to the original last row (off.rowOff + originalRowCount - 1),
+      // NOT beyond ws.rowCount — that would wipe footer/metadata rows below the data.
+      const origLastRow = off.rowOff + (off.origRowCount || 0) - 1;
+      const newLastRow  = off.rowOff + data.length - 1;
+      for (let excelRow = newLastRow + 1; excelRow <= origLastRow; excelRow++)
+        ws.getRow(excelRow).eachCell(cell => { cell.value = null; });
+    });
+    return await _xlsxWb.xlsx.writeBuffer();
+  }
+
+  // No original workbook — create fresh (no styles)
+  const wb = new ExcelJS.Workbook();
+  all.sheets.forEach(sh => {
+    const ws = wb.addWorksheet(sh.name);
+    ws.addRow(sh.headers || []);
+    (sh.rows || []).forEach(r => ws.addRow(r));
+  });
+  return await wb.xlsx.writeBuffer();
+}
+
+async function _saveXlsx(filepath) {
+  // Post xlsx bytes directly as binary (avoids JSON base64 encoding issues)
+  let u8;
+  try { u8 = await _buildXlsxBytes(); }
+  catch (err) { alert('Could not build xlsx: ' + err.message); return false; }
+  const url = '/api/save-xlsx?filepath=' + encodeURIComponent(filepath || '');
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: new Uint8Array(u8)
+  });
+  const data = await res.json();
+  if (data.ok) {
+    S.filepath = data.filepath; S.filetype = 'xlsx'; S.modified = false; updateStatus();
+    return true;
+  }
+  alert('Save failed: ' + data.error);
+  return false;
+}
+
+async function saveFile() {
+  const isXlsx = (S.filepath || '').toLowerCase().endsWith('.xlsx') || S.filetype === 'xlsx';
+  if (isXlsx) { await _saveXlsx(S.filepath); return; }
+  await syncNow();
+  const res = await fetch('/api/save', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ filepath: S.filepath })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    S.filepath = data.filepath; S.modified = false; updateStatus();
+  } else if (data.error === 'no_path') {
+    saveAs();
+  } else {
+    alert('Save failed: ' + data.error);
+  }
+}
+
+async function saveAs() {
+  prompt_('Save to path (leave blank to download as ' + (S.filetype || 'csv').toUpperCase() + '):', S.filepath || '', async path => {
+    if (!path) { downloadFile(); return; }
+    const isXlsx = path.toLowerCase().endsWith('.xlsx');
+    if (isXlsx) { await _saveXlsx(path); return; }
+    await syncNow();
+    const res = await fetch('/api/save', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filepath: path })
+    });
+    const data = await res.json();
+    if (data.ok) { S.filepath = data.filepath; S.filetype = data.filetype || S.filetype; S.modified = false; updateStatus(); }
+    else alert('Save failed: ' + data.error);
+  });
+}
+
+async function downloadFile(fmt) {
+  await syncNow();
+  fmt = fmt || S.filetype || 'csv';
+  const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx)$/i, '');
+  if (fmt === 'xlsx') {
+    try {
+      const buf  = await _buildXlsxBytes();
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a'); a.href = url; a.download = base + '.xlsx'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) { alert('Export failed: ' + err.message); return; }
+  } else {
+    const res = await fetch('/api/export', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ format: 'csv' })
+    });
+    if (!res.ok) { alert('Export failed'); return; }
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = base + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  S.modified = false;
+  updateStatus();
+}
+
+// Legacy alias
+async function downloadCSV() { return downloadFile('csv'); }
+
+// ── Server sync ────────────────────────────────────────────────────────────
+let syncTimer = null;
+function markModified() {
+  S.modified = true;
+  updateStatus();
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, 800);
+}
+
+async function syncNow() {
+  clearTimeout(syncTimer);
+  await fetch('/api/update', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ headers: S.headers, rows: S.rows })
+  });
+}
+
+// ── Status bar ─────────────────────────────────────────────────────────────
+function updateStatus() {
+  const name = S.filepath ? S.filepath.split('/').pop().split('\\').pop() : 'Untitled';
+  const mod  = S.modified ? ' ●' : '';
+  document.title = `CSV Editor — ${name}${mod}`;
+  document.getElementById('filepath-display').textContent = S.filepath || 'Untitled';
+  const selParts = [];
+  if (selectedRows.size === 1) selParts.push(`Row ${[...selectedRows][0] + 1}`);
+  else if (selectedRows.size > 1) selParts.push(`${selectedRows.size} rows`);
+  if (selectedCols.size === 1) selParts.push(`Col "${S.headers[[...selectedCols][0]]}"`);
+  else if (selectedCols.size > 1) selParts.push(`${selectedCols.size} cols`);
+  document.getElementById('status-left').textContent =
+    `${S.rows.length} rows × ${S.headers.length} cols` +
+    (selParts.length ? `  •  ${selParts.join(', ')} selected` : '') +
+    (S.modified ? '  •  Unsaved changes' : '');
+}
+
+// ── GitHub panel ───────────────────────────────────────────────────────────
+let _ghOpen = false;
+let _diffVersion = null;  // { sha, headers, rows } of the version shown in diff
+
+async function toggleGHPanel() {
+  _ghOpen = !_ghOpen;
+  document.getElementById('gh-panel').classList.toggle('open', _ghOpen);
+  if (_ghOpen) await loadGHConfig();
+}
+
+async function loadGHConfig() {
+  const cfg = await fetch('/api/github/config').then(r => r.json());
+  document.getElementById('gh-repo').value   = cfg.repo   || '';
+  document.getElementById('gh-branch').value = cfg.branch || 'main';
+  document.getElementById('gh-path').value   = cfg.path   || '';
+  // token: don't pre-fill for security
+  setGHStatus(cfg.configured ? '✓ Configured' : 'Not configured', cfg.configured ? 'ok' : '');
+}
+
+async function saveGHConfig() {
+  const token  = document.getElementById('gh-token').value.trim();
+  const repo   = document.getElementById('gh-repo').value.trim();
+  const branch = document.getElementById('gh-branch').value.trim() || 'main';
+  const path   = document.getElementById('gh-path').value.trim();
+  if (!repo || !path) { setGHStatus('Repo and file path are required', 'err'); return; }
+  const body = { repo, branch, path };
+  if (token) body.token = token;
+  await fetch('/api/github/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  setGHStatus('✓ Config saved', 'ok');
+  document.getElementById('gh-token').value = '';
+}
+
+function ghTab(tab) {
+  ['config', 'history', 'commit'].forEach(t => {
+    document.getElementById(`gh-${t}`).style.display    = t === tab ? '' : 'none';
+    document.getElementById(`tab-${t}`).classList.toggle('active', t === tab);
+  });
+}
+
+function setStatus(id, msg, cls) {
+  const el = document.getElementById(id);
+  el.textContent = msg; el.className = cls || '';
+}
+function setGHStatus(msg, cls) { setStatus('gh-status', msg, cls); }
+
+// ── Baseline (last committed / loaded state for instant diff) ──────────────
+let baseline = { headers: [], rows: [] };
+
+function setBaseline(headers, rows) {
+  baseline = {
+    headers: [...headers],
+    rows: rows.map(r => [...r]),
+  };
+  // Re-apply highlights after baseline changes (e.g. after a commit)
+  applyBaselineDiff();
+}
+
+// Return the baseline value for a cell by position, or undefined if row/col is new
+function baselineVal(r, c) {
+  if (c >= baseline.headers.length) return undefined;  // column didn't exist in baseline
+  const br = baseline.rows[r];
+  if (!br) return undefined;                            // row didn't exist in baseline
+  return br[c] ?? '';
+}
+
+// Scan every visible input and set/clear the cell-modified class
+function applyBaselineDiff() {
+  document.querySelectorAll('#table-body input[data-r]').forEach(inp => {
+    const r = +inp.dataset.r, c = +inp.dataset.c;
+    const bv = baselineVal(r, c);
+    inp.closest('td').classList.toggle('cell-modified',
+      bv === undefined || inp.value !== bv);
+  });
+}
+
+let _commits = [];  // kept so button handlers can look up data by index without onclick string injection
+
+async function loadHistory() {
+  const btn = document.getElementById('gh-load-btn');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  const data = await fetch('/api/github/history').then(r => r.json());
+  btn.disabled = false; btn.textContent = 'Refresh';
+  const box = document.getElementById('gh-commits');
+  if (data.error) { box.innerHTML = `<div style="color:#e07070">${data.error}</div>`; return; }
+  if (!data.commits.length) { box.innerHTML = '<div style="color:#778899">No commits found.</div>'; return; }
+  _commits = data.commits;
+  box.innerHTML = _commits.map((c, idx) => `
+    <div class="commit-item">
+      <div class="commit-sha">${c.short}</div>
+      <div class="commit-msg">${escHtml(c.message)}</div>
+      <div class="commit-meta">${escHtml(c.author)} · ${fmtDate(c.date)}</div>
+      <div class="commit-actions">
+        <button data-idx="${idx}" class="gh-diff-btn">⊕ Diff vs. current</button>
+        <button data-idx="${idx}" class="gh-load-version-btn">↓ Load</button>
+      </div>
+    </div>`).join('');
+  // Use event delegation — avoids any JS-in-HTML-attribute quoting issues
+  box.onclick = e => {
+    const diffBtn = e.target.closest('.gh-diff-btn');
+    const loadBtn = e.target.closest('.gh-load-version-btn');
+    if (diffBtn) { const c = _commits[+diffBtn.dataset.idx]; showDiff(c.sha, c.message); }
+    if (loadBtn) { const c = _commits[+loadBtn.dataset.idx]; loadVersion(c.sha); }
+  };
+}
+
+async function doCommit() {
+  const msg = document.getElementById('gh-commit-msg').value.trim();
+  if (!msg) { alert('Enter a commit message.'); return; }
+  await syncNow();
+  setStatus('gh-commit-status', 'Pushing…', '');
+  const isXlsx = (S.filepath || '').toLowerCase().endsWith('.xlsx') || S.filetype === 'xlsx';
+  let data;
+  if (isXlsx) {
+    // Send raw xlsx bytes to binary endpoint — avoids JSON encoding issues
+    let buf;
+    try { buf = await _buildXlsxBytes(); }
+    catch(err) { setStatus('gh-commit-status', '✗ ' + err.message, 'err'); return; }
+    const url = '/api/github/commit-xlsx?message=' + encodeURIComponent(msg);
+    data = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array(buf)
+    }).then(r => r.json());
+  } else {
+    data = await fetch('/api/github/commit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: msg })
+    }).then(r => r.json());
+  }
+  if (data.error) {
+    setStatus('gh-commit-status', '✗ ' + data.error, 'err');
+  } else {
+    setStatus('gh-commit-status', `✓ Committed ${data.sha}`, 'ok');
+    document.getElementById('gh-commit-msg').value = '';
+    setBaseline(S.headers, S.rows);  // committed state is the new clean baseline
+    S.modified = false; updateStatus();
+  }
+}
+
+// ── Inline diff engine ──────────────────────────────────────────────────────
+
+// _inlineDiff: null | { sha, label, commitH, commitR, mapping, ghostRows }
+// mapping[curRowIdx]: { type: 'same'|'changed'|'added', commitRow? }
+//   same    – row unchanged
+//   changed – row modified vs commit; commitRow has the commit values
+//   added   – row exists locally but not in commit (you added it) → green
+// ghostRows: [{ beforeCurIdx, commitH, commitRow }]
+//   rows that exist in commit but not locally (you deleted them) → grey ghost
+let _inlineDiff = null;
+
+function buildInlineDiffMapping(curH, curR, commitH, commitR) {
+  // computeDiff(curR, commitR): '-' = in cur not commit = locally added; '+' = in commit not cur = locally deleted
+  const ops = computeDiff(curR, commitR);
+  const mapping = [], ghostRows = [];
+  let curIdx = 0;
+  ops.forEach(op => {
+    if      (op.t === '=') { mapping.push({ type: 'same',    commitRow: op.n }); curIdx++; }
+    else if (op.t === '-') { mapping.push({ type: 'added'                    }); curIdx++; }
+    else if (op.t === '+') { ghostRows.push({ beforeCurIdx: curIdx, commitH, commitRow: op.n }); }
+    else if (op.t === '~') { mapping.push({ type: 'changed',  commitRow: op.n }); curIdx++; }
+  });
+  return { mapping, ghostRows };
+}
+
+// Parse a /api/github/version response into {headers, rows}
+function _parseVersionData(data) {
+  if (data.format === 'xlsx') {
+    if (data.rawB64) {
+      // Server sent raw bytes — parse with SheetJS in browser
+      const bin = atob(data.rawB64);
+      const u8  = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const wb  = XLSX.read(u8, { type: 'array', cellDates: true });
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      if (!ws || !ws['!ref']) return { headers: [], rows: [] };
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      const rows2d = [];
+      for (let r = range.s.r; r <= range.e.r; r++) {
+        const cells = [];
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const cell = ws[XLSX.utils.encode_cell({ r, c })];
+          if (!cell) { cells.push(''); continue; }
+          if (cell.t === 'b') cells.push(cell.v ? 'TRUE' : 'FALSE');
+          else if (cell.w != null) cells.push(cell.w);
+          else if (cell.v != null) cells.push(String(cell.v));
+          else cells.push('');
+        }
+        rows2d.push(cells);
+      }
+      while (rows2d.length && rows2d[rows2d.length-1].every(c => c==='')) rows2d.pop();
+      return { headers: rows2d[0] || [], rows: rows2d.slice(1) };
+    }
+    return { headers: data.headers || [], rows: data.rows || [] };
+  }
+  return parseCSV(data.content);
+}
+
+async function showDiff(sha, label) {
+  const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
+  if (data.error) { alert('Could not fetch version: ' + data.error); return; }
+
+  const { headers: commitH, rows: commitR } = _parseVersionData(data);
+  _diffVersion = { sha, headers: commitH, rows: commitR };
+
+  const { mapping, ghostRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
+  _inlineDiff = { sha, label, commitH, commitR, mapping, ghostRows };
+
+  const added   = mapping.filter(m => m.type === 'added').length;
+  const removed = ghostRows.length;
+  const changed = mapping.filter(m => m.type === 'changed').length;
+  document.getElementById('diff-banner-label').textContent = sha.slice(0, 7) + (label ? ` "${label}"` : '');
+  document.getElementById('diff-banner-stats').textContent =
+    [added && `${added} added`, removed && `${removed} removed`, changed && `${changed} modified`]
+      .filter(Boolean).join(' · ') || 'no changes';
+  document.getElementById('diff-banner').classList.add('open');
+
+  render();
+}
+
+function clearInlineDiff() {
+  _inlineDiff = null;
+  document.getElementById('diff-banner').classList.remove('open');
+  render();
+}
+
+function closeDiff() {
+  document.getElementById('diff-overlay').classList.remove('open');
+}
+
+function loadVersionIntoEditor() {
+  if (!_diffVersion) return;
+  S.headers = _diffVersion.headers;
+  S.rows    = _diffVersion.rows;
+  setBaseline(S.headers, S.rows);
+  selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
+  markModified(); render(); closeDiff();
+}
+
+async function loadVersion(sha) {
+  if (!confirm('Replace current data with this version? Unsaved changes will be lost.')) return;
+  const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
+  if (data.error) { alert('Error: ' + data.error); return; }
+  const { headers, rows } = _parseVersionData(data);
+  S.headers = headers; S.rows = rows;
+  setBaseline(headers, rows);
+  selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
+  markModified(); render();
+}
+
+function parseCSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const parse = line => {
+    const cells = []; let cur = '', inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { if (inQ && line[i+1] === '"') { cur += '"'; i++; } else inQ = !inQ; }
+      else if (ch === ',' && !inQ) { cells.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    cells.push(cur); return cells;
+  };
+  const all = lines.filter(l => l.trim()).map(parse);
+  if (!all.length) return { headers: [], rows: [] };
+  const headers = all[0];
+  const rows = all.slice(1).map(r => {
+    while (r.length < headers.length) r.push('');
+    return r;
+  });
+  return { headers, rows };
+}
+
+// LCS-based row diff
+function computeDiff(oldR, newR) {
+  const n = oldR.length, m = newR.length;
+  // Normalize rows before keying: trim trailing empty cells and coerce null→''
+  // so that ["A","B","",""] and ["A","B"] compare as equal (xlsx writers omit trailing empties)
+  const normRow = r => { const a = r.map(v => (v == null ? '' : String(v))); while (a.length && a[a.length-1] === '') a.pop(); return a; };
+  // Pre-compute keys once — avoids O(n×m) repeated JSON.stringify calls in the DP loop
+  const oldK = oldR.map(r => JSON.stringify(normRow(r)));
+  const newK = newR.map(r => JSON.stringify(normRow(r)));
+  const dp = Array.from({length: n+1}, () => new Int32Array(m+1));
+  for (let i = 1; i <= n; i++)
+    for (let j = 1; j <= m; j++)
+      dp[i][j] = oldK[i-1] === newK[j-1]
+        ? dp[i-1][j-1] + 1
+        : Math.max(dp[i-1][j], dp[i][j-1]);
+
+  const ops = []; let i = n, j = m;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldK[i-1] === newK[j-1])
+      { ops.unshift({t:'=', o:oldR[i-1], n:newR[j-1]}); i--; j--; }
+    else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j]))
+      { ops.unshift({t:'+', n:newR[j-1]}); j--; }
+    else
+      { ops.unshift({t:'-', o:oldR[i-1]}); i--; }
+  }
+
+  // Collect consecutive runs of + and - (in any order) and pair by similarity.
+  // Unpaired + = truly new incoming row. Unpaired - = truly deleted ghost row.
+  function cellSim(r1, r2) {
+    let m = 0;
+    for (let i = 0; i < Math.min(r1.length, r2.length); i++)
+      if ((r1[i] ?? '') === (r2[i] ?? '')) m++;
+    return m;
+  }
+  const result = []; let k = 0;
+  while (k < ops.length) {
+    if (ops[k].t === '+' || ops[k].t === '-') {
+      const adds = [], dels = [];
+      while (k < ops.length && (ops[k].t === '+' || ops[k].t === '-')) {
+        if (ops[k].t === '+') adds.push(ops[k++]);
+        else dels.push(ops[k++]);
+      }
+      const usedAdd = new Set();
+      const pairedAdd = new Array(dels.length).fill(-1); // pairedAdd[d] = add index
+      dels.forEach((del, d) => {
+        let bestA = -1, bestSim = 0;          // bestSim=0 means "must beat 0 to pair"
+        adds.forEach((add, a) => {
+          if (usedAdd.has(a)) return;
+          const s = cellSim(del.o, add.n);
+          if (s > bestSim) { bestSim = s; bestA = a; }
+        });
+        if (bestA >= 0) { pairedAdd[d] = bestA; usedAdd.add(bestA); }
+      });
+
+      // Build reverse map: add index → del index (for paired adds)
+      const delForAdd = new Map();
+      pairedAdd.forEach((a, d) => { if (a >= 0) delForAdd.set(a, d); });
+      // Emit in commit order (adds order) so incoming rows land at the right position
+      let nextDel = 0;
+      adds.forEach((add, a) => {
+        if (delForAdd.has(a)) {
+          const d = delForAdd.get(a);
+          while (nextDel < d) result.push(dels[nextDel++]); // unpaired dels before this pair
+          result.push({ t:'~', o:dels[d].o, n:add.n });
+          nextDel = d + 1;
+        } else {
+          result.push(add); // truly new row — emitted in commit order
+        }
+      });
+      while (nextDel < dels.length) result.push(dels[nextDel++]); // remaining unpaired dels
+    } else {
+      result.push(ops[k++]);
+    }
+  }
+  return result;
+}
+
+function renderDiff(oldH, oldR, newH, newR) {
+  const allH = [...new Set([...oldH, ...newH])];
+  const diff = computeDiff(oldR, newR);
+
+  const thead = document.querySelector('#diff-table thead');
+  const tbody = document.querySelector('#diff-table tbody');
+  thead.innerHTML = `<tr><th>±</th><th>#</th>${allH.map(h => `<th>${escHtml(h)}</th>`).join('')}</tr>`;
+  tbody.innerHTML = '';
+
+  let oldIdx = 0, newIdx = 0;
+  diff.forEach(op => {
+    if (op.t === '=') {
+      const tr = makeRow('', ++oldIdx + '/' + ++newIdx, allH, oldH, op.o, null, null);
+      tbody.appendChild(tr); return;
+    }
+    if (op.t === '+') {
+      const tr = makeRow('+', '—/' + ++newIdx, allH, newH, op.n, null, null);
+      tr.className = 'diff-added'; tbody.appendChild(tr); return;
+    }
+    if (op.t === '-') {
+      const tr = makeRow('-', ++oldIdx + '/—', allH, oldH, op.o, null, null);
+      tr.className = 'diff-removed'; tbody.appendChild(tr); return;
+    }
+    if (op.t === '~') {
+      // old row — compare against new so changed cells are highlighted
+      const trOld = makeRow('-', ++oldIdx + '/…', allH, oldH, op.o, newH, op.n);
+      trOld.className = 'diff-modified-old'; tbody.appendChild(trOld);
+      // new row — compare against old
+      const trNew = makeRow('+', '…/' + ++newIdx, allH, newH, op.n, oldH, op.o);
+      trNew.className = 'diff-modified-new'; tbody.appendChild(trNew);
+    }
+  });
+
+  // Summary row
+  const added   = diff.filter(o => o.t === '+').length;
+  const removed = diff.filter(o => o.t === '-').length;
+  const changed = diff.filter(o => o.t === '~').length;
+  const summary = document.createElement('tr');
+  summary.innerHTML = `<td colspan="${allH.length + 2}" style="padding:8px 12px;color:#555;font-size:11px;background:#f8f8f8">
+    ${added} added · ${removed} removed · ${changed} modified · ${diff.filter(o=>o.t==='=').length} unchanged</td>`;
+  tbody.appendChild(summary);
+}
+
+// compareH is the header set that indexes compareData (may differ from rowH)
+function makeRow(marker, idx, allH, rowH, rowData, compareH, compareData) {
+  const tr = document.createElement('tr');
+  const mTd = document.createElement('td');
+  mTd.className = 'diff-marker'; mTd.textContent = marker;
+  tr.appendChild(mTd);
+  const iTd = document.createElement('td');
+  iTd.style.cssText = 'font-size:10px;color:#888;white-space:nowrap;font-family:monospace';
+  iTd.textContent = idx; tr.appendChild(iTd);
+
+  allH.forEach(h => {
+    const colIdx = rowH.indexOf(h);
+    const val = colIdx >= 0 ? (rowData[colIdx] ?? '') : '';
+    const td  = document.createElement('td');
+    td.textContent = val;
+    if (compareData !== null) {
+      // Use compareH (the other side's headers) to index into compareData correctly
+      const cmpIdx = compareH.indexOf(h);
+      const cmpVal = cmpIdx >= 0 ? (compareData[cmpIdx] ?? '') : '';
+      if (val !== cmpVal) td.classList.add('cell-changed');
+    }
+    tr.appendChild(td);
+  });
+  return tr;
+}
+
+// ── Utilities ───────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtDate(iso) {
+  try { return new Date(iso).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'}); }
+  catch { return iso; }
+}
+
+// ── Modal prompt ───────────────────────────────────────────────────────────
+let _modalResolve = null;
+function prompt_(title, defaultVal, cb) {
+  _modalResolve = cb;
+  document.getElementById('modal-title').textContent = title;
+  const inp = document.getElementById('modal-input');
+  inp.value = defaultVal || '';
+  document.getElementById('modal-overlay').classList.add('open');
+  setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  inp.onkeydown = e => { if (e.key === 'Enter') modalOk(); else if (e.key === 'Escape') modalCancel(); };
+}
+function modalOk() {
+  const val = document.getElementById('modal-input').value;
+  document.getElementById('modal-overlay').classList.remove('open');
+  if (_modalResolve) { _modalResolve(val); _modalResolve = null; }
+}
+function modalCancel() {
+  document.getElementById('modal-overlay').classList.remove('open');
+  _modalResolve = null;
+}
+
+// ── Sheet tabs ──────────────────────────────────────────────────────────────
+function renderSheetTabs() {
+  const bar = document.getElementById('sheet-tabs');
+  // Remove existing tabs (keep the + button)
+  [...bar.querySelectorAll('.sheet-tab')].forEach(t => t.remove());
+  const addBtn = bar.querySelector('.sheet-tab-add');
+  (S.sheets || []).forEach((sh, i) => {
+    const tab = document.createElement('div');
+    tab.className = 'sheet-tab' + (i === S.activeSheet ? ' active' : '');
+    tab.textContent = sh.name;
+    tab.title = 'Click to switch \u2022 Double-click to rename';
+    tab.onclick = () => switchSheet(i);
+    tab.ondblclick = (e) => { e.stopPropagation(); renameSheet(i, sh.name); };
+    // Right-click context for delete
+    tab.oncontextmenu = (e) => {
+      e.preventDefault();
+      if ((S.sheets || []).length > 1 && confirm(`Delete sheet "${sh.name}"?`)) deleteSheet(i);
+    };
+    bar.insertBefore(tab, addBtn);
+  });
+}
+
+async function switchSheet(idx) {
+  if (idx === S.activeSheet) return;
+  await syncNow();
+  await fetch('/api/switch-sheet', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ index: idx })
+  });
+  S = await fetch('/api/data').then(r => r.json());
+  // Fetch all-sheets to get styles for new active sheet
+  const allData = await fetch('/api/all-sheets').then(r => r.json());
+  const activeSh = allData.sheets[idx];
+  _cellStyles = activeSh ? { headerStyles: activeSh.headerStyles || [], rowStyles: activeSh.rowStyles || [] } : null;
+  setBaseline(S.headers, S.rows);
+  resetSelection(); clearSearch();
+  render();
+}
+
+async function addSheet() {
+  await syncNow();
+  const res  = await fetch('/api/add-sheet', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+  const data = await res.json();
+  S = await fetch('/api/data').then(r => r.json());
+  setBaseline(S.headers, S.rows);
+  resetSelection(); clearSearch();
+  render();
+}
+
+async function renameSheet(idx, current) {
+  prompt_('Rename sheet:', current, async name => {
+    if (!name || name === current) return;
+    await fetch('/api/rename-sheet', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ index: idx, name })
+    });
+    S.sheets[idx].name = name;
+    renderSheetTabs();
+  });
+}
+
+async function deleteSheet(idx) {
+  await syncNow();
+  await fetch('/api/delete-sheet', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ index: idx })
+  });
+  S = await fetch('/api/data').then(r => r.json());
+  setBaseline(S.headers, S.rows);
+  resetSelection(); clearSearch();
+  render();
+}
+</script>
+</body>
+</html>
