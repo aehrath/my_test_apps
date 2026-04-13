@@ -1061,7 +1061,7 @@ function openFile() {
         if (!ref) return { name, headers: [], rows: [], headerStyles: [], rowStyles: [] };
         const range = XLSX.utils.decode_range(ref);
         // Store 1-based Excel row/col where this sheet's data starts
-        _xlsxSheetOffsets[name] = { rowOff: range.s.r + 1, colOff: range.s.c + 1 };
+        _xlsxSheetOffsets[name] = { rowOff: range.s.r + 1, colOff: range.s.c + 1, origRowCount: range.e.r - range.s.r + 1 };
         const rows2d = [], styles2d = [];
 
         for (let r = range.s.r; r <= range.e.r; r++) {
@@ -1180,9 +1180,12 @@ async function _buildXlsxBytes() {
         for (let ci = row.length; ci < oldColCount; ci++)
           ws.getCell(excelRow, off.colOff + ci).value = null;
       });
-      // Clear any rows beyond the new row count (deleted rows)
-      const lastDataRow = off.rowOff + data.length - 1;
-      for (let excelRow = lastDataRow + 1; excelRow <= ws.rowCount; excelRow++)
+      // Clear rows that were inside the original data range but have since been deleted.
+      // We only clear up to the original last row (off.rowOff + originalRowCount - 1),
+      // NOT beyond ws.rowCount — that would wipe footer/metadata rows below the data.
+      const origLastRow = off.rowOff + (off.origRowCount || 0) - 1;
+      const newLastRow  = off.rowOff + data.length - 1;
+      for (let excelRow = newLastRow + 1; excelRow <= origLastRow; excelRow++)
         ws.getRow(excelRow).eachCell(cell => { cell.value = null; });
     });
     return await _xlsxWb.xlsx.writeBuffer();
