@@ -696,7 +696,7 @@ function renderRows() {
       inp.dataset.c = c;
 
       // Baseline (unsaved-edit) highlight
-      const bv0 = baselineVal(r, h);
+      const bv0 = baselineVal(r, c);
       if (bv0 === undefined || inp.value !== bv0) td.classList.add('cell-modified');
 
       // Inline diff: show commit value in yellow, strike through current value
@@ -722,7 +722,7 @@ function renderRows() {
       inp.addEventListener('input', () => {
         S.rows[r][c] = inp.value;
         markModified();
-        const bv = baselineVal(r, h);
+        const bv = baselineVal(r, c);
         td.classList.toggle('cell-modified', bv === undefined || inp.value !== bv);
         if (entry?.type === 'changed') {
           const oi = _inlineDiff.commitH.indexOf(h);
@@ -1376,20 +1376,19 @@ function setBaseline(headers, rows) {
   applyBaselineDiff();
 }
 
-// Return the baseline value for a cell, or undefined if the row/column is new
-function baselineVal(r, colName) {
-  const bc = baseline.headers.indexOf(colName);
-  if (bc === -1) return undefined;          // column didn't exist in baseline
+// Return the baseline value for a cell by position, or undefined if row/col is new
+function baselineVal(r, c) {
+  if (c >= baseline.headers.length) return undefined;  // column didn't exist in baseline
   const br = baseline.rows[r];
-  if (!br) return undefined;                // row didn't exist in baseline
-  return br[bc] ?? '';
+  if (!br) return undefined;                            // row didn't exist in baseline
+  return br[c] ?? '';
 }
 
 // Scan every visible input and set/clear the cell-modified class
 function applyBaselineDiff() {
   document.querySelectorAll('#table-body input[data-r]').forEach(inp => {
     const r = +inp.dataset.r, c = +inp.dataset.c;
-    const bv = baselineVal(r, S.headers[c]);
+    const bv = baselineVal(r, c);
     inp.closest('td').classList.toggle('cell-modified',
       bv === undefined || inp.value !== bv);
   });
