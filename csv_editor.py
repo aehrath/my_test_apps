@@ -734,9 +734,10 @@ function _resolveColor(c, themeColors) {
 
 // ── State ──────────────────────────────────────────────────────────────────
 let S = { headers: [], rows: [], filepath: null, modified: false };
-let _xlsxWb = null;      // ExcelJS workbook loaded lazily at save time (for style preservation)
-let _xlsxOrigBuf = null; // original file ArrayBuffer — ExcelJS reloads from this at save time
-let _cellStyles = null;  // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
+let _xlsxWb = null;          // ExcelJS workbook for style-preserving save
+let _xlsxOrigBuf = null;     // original ArrayBuffer — reload ExcelJS lazily if load failed
+let _cellStyles = null;      // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
+let _xlsxSheetOffsets = {};  // { sheetName: {rowOff, colOff} } — Excel row/col where sheet data starts (1-based)
 let selectedRows = new Set();   // indices of selected rows
 let selectedCols = new Set();   // indices of selected columns
 let anchorRow = -1;             // shift-click anchor
@@ -1240,12 +1241,15 @@ function openFile() {
         return null;
       };
 
+      _xlsxSheetOffsets = {};
       sheets = sjWb.SheetNames.map(name => {
         const ws   = sjWb.Sheets[name];
         const ejWs = ejWb ? ejWb.getWorksheet(name) : null;
         const ref  = ws['!ref'];
         if (!ref) return { name, headers: [], rows: [], headerStyles: [], rowStyles: [] };
         const range = XLSX.utils.decode_range(ref);
+        // Store 1-based Excel row/col where this sheet's data starts
+        _xlsxSheetOffsets[name] = { rowOff: range.s.r + 1, colOff: range.s.c + 1 };
         const rows2d = [], styles2d = [];
 
         for (let r = range.s.r; r <= range.e.r; r++) {
@@ -1264,6 +1268,7 @@ function openFile() {
             // Style from ExcelJS — resolves theme colors via resolveColor()
             let st = null;
             if (ejWs) {
+              // ExcelJS uses 1-based row/col matching Excel coordinates
               const ejCell = ejWs.getCell(r + 1, c + 1);
               const fill = ejCell.fill      || {};
               const font = ejCell.font      || {};
@@ -1347,23 +1352,26 @@ async function _buildXlsxBytes() {
       let ws = _xlsxWb.getWorksheet(sh.name);
       if (!ws) ws = _xlsxWb.addWorksheet(sh.name);
       const data = [sh.headers || [], ...(sh.rows || [])];
+      // Use the stored offset so we write back to the same Excel rows/cols the data came from
+      const off = _xlsxSheetOffsets[sh.name] || { rowOff: 1, colOff: 1 };
       data.forEach((row, ri) => {
+        const excelRow = off.rowOff + ri;
         row.forEach((val, ci) => {
-          const cell = ws.getCell(ri + 1, ci + 1);
+          const cell = ws.getCell(excelRow, off.colOff + ci);
           // Update value only — cell.style is untouched so fill/font are preserved
           // Only coerce to number if round-tripping is lossless: "0805" → 805 → "805" ≠ "0805" → keep string
           const n = val === '' || val == null ? null : Number(val);
           cell.value = (n != null && !isNaN(n) && String(n) === val.trim()) ? n : (val === '' ? null : val);
         });
         // Clear any cells beyond the new column count (deleted columns)
-        const oldColCount = ws.getRow(ri + 1).cellCount;
-        for (let ci = row.length + 1; ci <= oldColCount; ci++)
-          ws.getCell(ri + 1, ci).value = null;
+        const oldColCount = ws.getRow(excelRow).cellCount;
+        for (let ci = row.length; ci < oldColCount; ci++)
+          ws.getCell(excelRow, off.colOff + ci).value = null;
       });
       // Clear any rows beyond the new row count (deleted rows)
-      const oldRowCount = ws.rowCount;
-      for (let ri = data.length + 1; ri <= oldRowCount; ri++)
-        ws.getRow(ri).eachCell(cell => { cell.value = null; });
+      const lastDataRow = off.rowOff + data.length - 1;
+      for (let excelRow = lastDataRow + 1; excelRow <= ws.rowCount; excelRow++)
+        ws.getRow(excelRow).eachCell(cell => { cell.value = null; });
     });
     return await _xlsxWb.xlsx.writeBuffer();
   }
