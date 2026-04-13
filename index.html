@@ -702,8 +702,7 @@ function renderRows() {
       // Inline diff: show commit value in yellow, strike through current value
       let oldValLabel = null;
       if (entry?.type === 'changed') {
-        const oi = _inlineDiff.commitH.indexOf(h);
-        const commitVal = oi >= 0 ? (entry.commitRow[oi] ?? '') : '';
+        const commitVal = entry.commitRow?.[c] ?? '';
         const curVal = row[c] ?? '';
         if (curVal !== commitVal) {
           td.classList.add('cell-diff-changed');
@@ -725,8 +724,7 @@ function renderRows() {
         const bv = baselineVal(r, c);
         td.classList.toggle('cell-modified', bv === undefined || inp.value !== bv);
         if (entry?.type === 'changed') {
-          const oi = _inlineDiff.commitH.indexOf(h);
-          const commitVal = oi >= 0 ? (entry.commitRow[oi] ?? '') : '';
+          const commitVal = entry.commitRow?.[c] ?? '';
           const changed = inp.value !== commitVal;
           td.classList.toggle('cell-diff-changed', changed);
           if (oldValLabel) oldValLabel.style.display = changed ? '' : 'none';
