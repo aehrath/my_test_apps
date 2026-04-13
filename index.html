@@ -390,7 +390,7 @@
 <div id="diff-banner">
   <span>Comparing with <strong id="diff-banner-label"></strong></span>
   <span class="diff-stats" id="diff-banner-stats"></span>
-  <button onclick="clearInlineDiff()">✕ Clear diff</button>
+  <button onclick="clearInlineDiff()" title="Exit diff view (Esc)">✕ Exit diff</button>
 </div>
 
 <div id="table-wrap">
@@ -849,6 +849,7 @@ function onKeyDown(e) {
     e.shiftKey ? saveAs() : saveFile();
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 'o') { e.preventDefault(); openFile(); }
+  if (e.key === 'Escape' && _inlineDiff) { e.preventDefault(); clearInlineDiff(); }
 }
 
 function focusCell(r, c) {
