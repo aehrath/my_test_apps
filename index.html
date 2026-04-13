@@ -864,6 +864,8 @@ function focusCell(r, c) {
 function addRow() {
   const insertAt = selectedRows.size > 0 ? Math.max(...selectedRows) + 1 : S.rows.length;
   S.rows.splice(insertAt, 0, Array(S.headers.length).fill(''));
+  // Keep baseline in sync so rows below the insertion don't appear modified
+  baseline.rows.splice(insertAt, 0, Array(baseline.headers.length).fill(''));
   selectedRows = new Set([insertAt]); anchorRow = insertAt;
   markModified();
   renderRows();
@@ -875,7 +877,11 @@ function deleteSelectedRow() {
   const toDelete = [...selectedRows].sort((a, b) => b - a); // reverse so splices don't shift
   const label = toDelete.length === 1 ? `row ${toDelete[0] + 1}` : `${toDelete.length} rows`;
   if (!confirm(`Delete ${label}?`)) return;
-  toDelete.forEach(r => S.rows.splice(r, 1));
+  toDelete.forEach(r => {
+    S.rows.splice(r, 1);
+    // Keep baseline in sync so rows below the deletion don't appear modified
+    baseline.rows.splice(r, 1);
+  });
   const next = S.rows.length > 0 ? Math.min(Math.min(...toDelete), S.rows.length - 1) : -1;
   selectedRows = next >= 0 ? new Set([next]) : new Set(); anchorRow = next;
   markModified();
