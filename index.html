@@ -164,9 +164,9 @@
   #diff-banner button { margin-left:auto; background:transparent; border:1px solid #4a6278;
     color:#9fc8f0; border-radius:3px; padding:1px 10px; cursor:pointer; font-size:11px; }
   #diff-banner button:hover { background:#2a4a6e; }
-  tbody tr.row-diff-added > td { background:#efffef !important; }
-  tbody tr.row-diff-removed > td { background:#f8f8f8 !important; color:#bbb; pointer-events:none; }
-  tbody tr.row-diff-removed > td.row-num { color:#ddd; }
+  tbody tr.row-diff-added > td { background:#efffef !important; }   /* locally added */
+  tbody tr.row-diff-ghost > td { background:#f8f8f8 !important; color:#bbb; pointer-events:none; }  /* deleted locally, exists in commit */
+  tbody tr.row-diff-ghost > td.row-num { color:#ddd; }
   tbody td.cell-diff-changed { background:#ffff00 !important; }
   tbody td.cell-diff-changed input { background:transparent; color:inherit; }
   tbody td.cell-diff-changed input:focus { background:#ffff33; }
@@ -642,25 +642,24 @@ function renderRows() {
   tbody.innerHTML = '';
 
   // Index incoming (new-in-commit) rows by the current-row index they appear before
-  const incomingBefore = {};
+  const ghostBefore = {};
   if (_inlineDiff) {
-    _inlineDiff.incomingRows.forEach(g => {
-      (incomingBefore[g.beforeCurIdx] = incomingBefore[g.beforeCurIdx] || []).push(g);
+    _inlineDiff.ghostRows.forEach(g => {
+      (ghostBefore[g.beforeCurIdx] = ghostBefore[g.beforeCurIdx] || []).push(g);
     });
   }
 
   function insertIncoming(beforeIdx) {
-    (incomingBefore[beforeIdx] || []).forEach(g => {
+    (ghostBefore[beforeIdx] || []).forEach(g => {
       const tr = document.createElement('tr');
-      tr.className = 'row-diff-added';
+      tr.className = 'row-diff-ghost';
       const rn = document.createElement('td');
       rn.className = 'row-num';
-      rn.textContent = '+';
+      rn.textContent = '−';
       tr.appendChild(rn);
-      S.headers.forEach(h => {
-        const oi = g.commitH.indexOf(h);
+      S.headers.forEach((h, ci) => {
         const td = document.createElement('td');
-        td.textContent = oi >= 0 ? (g.commitRow[oi] ?? '') : '';
+        td.textContent = g.commitRow[ci] ?? '';
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
@@ -674,7 +673,7 @@ function renderRows() {
     const tr = document.createElement('tr');
     tr.className = r % 2 === 0 ? 'even' : 'odd';
     if (selectedRows.has(r)) tr.classList.add('selected-row');
-    if (entry?.type === 'removed') tr.classList.add('row-diff-removed');
+    if (entry?.type === 'added') tr.classList.add('row-diff-added');
 
     const rn = document.createElement('td');
     rn.className = 'row-num';
@@ -1466,27 +1465,27 @@ async function doCommit() {
 
 // ── Inline diff engine ──────────────────────────────────────────────────────
 
-// _inlineDiff: null | { sha, label, commitH, commitR, mapping, incomingRows }
-// mapping[curRowIdx]: { type: 'same'|'changed'|'removed', commitRow? }
-//   same    – row unchanged; no highlight
-//   changed – row modified; commitRow has the incoming values
-//   removed – row exists in current but not in commit; shown as ghost
-// incomingRows: [{ beforeCurIdx, commitH, commitRow }]
-//   rows that exist in commit but not in current; shown in green between current rows
+// _inlineDiff: null | { sha, label, commitH, commitR, mapping, ghostRows }
+// mapping[curRowIdx]: { type: 'same'|'changed'|'added', commitRow? }
+//   same    – row unchanged
+//   changed – row modified vs commit; commitRow has the commit values
+//   added   – row exists locally but not in commit (you added it) → green
+// ghostRows: [{ beforeCurIdx, commitH, commitRow }]
+//   rows that exist in commit but not locally (you deleted them) → grey ghost
 let _inlineDiff = null;
 
 function buildInlineDiffMapping(curH, curR, commitH, commitR) {
-  // Diff current→commit: + means new in commit, - means removed from commit (ghost)
+  // computeDiff(curR, commitR): '-' = in cur not commit = locally added; '+' = in commit not cur = locally deleted
   const ops = computeDiff(curR, commitR);
-  const mapping = [], incomingRows = [];
+  const mapping = [], ghostRows = [];
   let curIdx = 0;
   ops.forEach(op => {
     if      (op.t === '=') { mapping.push({ type: 'same',    commitRow: op.n }); curIdx++; }
-    else if (op.t === '-') { mapping.push({ type: 'removed'                  }); curIdx++; }
-    else if (op.t === '+') { incomingRows.push({ beforeCurIdx: curIdx, commitH, commitRow: op.n }); }
+    else if (op.t === '-') { mapping.push({ type: 'added'                    }); curIdx++; }
+    else if (op.t === '+') { ghostRows.push({ beforeCurIdx: curIdx, commitH, commitRow: op.n }); }
     else if (op.t === '~') { mapping.push({ type: 'changed',  commitRow: op.n }); curIdx++; }
   });
-  return { mapping, incomingRows };
+  return { mapping, ghostRows };
 }
 
 // Parse a /api/github/version response into {headers, rows}
@@ -1529,11 +1528,11 @@ async function showDiff(sha, label) {
   const { headers: commitH, rows: commitR } = _parseVersionData(data);
   _diffVersion = { sha, headers: commitH, rows: commitR };
 
-  const { mapping, incomingRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
-  _inlineDiff = { sha, label, commitH, commitR, mapping, incomingRows };
+  const { mapping, ghostRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
+  _inlineDiff = { sha, label, commitH, commitR, mapping, ghostRows };
 
-  const added   = incomingRows.length;
-  const removed = mapping.filter(m => m.type === 'removed').length;
+  const added   = mapping.filter(m => m.type === 'added').length;
+  const removed = ghostRows.length;
   const changed = mapping.filter(m => m.type === 'changed').length;
   document.getElementById('diff-banner-label').textContent = sha.slice(0, 7) + (label ? ` "${label}"` : '');
   document.getElementById('diff-banner-stats').textContent =
