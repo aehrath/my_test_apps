@@ -864,8 +864,9 @@ function focusCell(r, c) {
 function addRow() {
   const insertAt = selectedRows.size > 0 ? Math.max(...selectedRows) + 1 : S.rows.length;
   S.rows.splice(insertAt, 0, Array(S.headers.length).fill(''));
-  // Keep baseline in sync so rows below the insertion don't appear modified
-  baseline.rows.splice(insertAt, 0, Array(baseline.headers.length).fill(''));
+  // Insert null into baseline so the new row shows as modified, while rows
+  // below keep their correct baseline values and don't appear changed
+  baseline.rows.splice(insertAt, 0, null);
   selectedRows = new Set([insertAt]); anchorRow = insertAt;
   markModified();
   renderRows();
