@@ -58,6 +58,10 @@ state = State()
 
 import datetime as _dt
 import re as _re
+import colorsys as _colorsys
+import xml.etree.ElementTree as _ET
+import zipfile as _zipfile
+import posixpath as _ppath
 
 def _cell_to_str(value):
     """Convert an openpyxl cell value to a clean string."""
@@ -89,6 +93,390 @@ def _str_to_cell(s):
     if _FLOAT_RE.match(s):
         return float(s)
     return s
+
+
+_THEME_ORDER = ['lt1','dk1','lt2','dk2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink']
+_INDEXED_COLORS = {
+    0: '000000', 1: 'FFFFFF', 2: 'FF0000', 3: '00FF00', 4: '0000FF', 5: 'FFFF00', 6: 'FF00FF', 7: '00FFFF',
+    8: '000000', 9: 'FFFFFF', 10: 'FF0000', 11: '00FF00', 12: '0000FF', 13: 'FFFF00', 14: 'FF00FF', 15: '00FFFF',
+    16: '800000', 17: '008000', 18: '000080', 19: '808000', 20: '800080', 21: '008080', 22: 'C0C0C0', 23: '808080',
+    24: '9999FF', 25: '993366', 26: 'FFFFCC', 27: 'CCFFFF', 28: '660066', 29: 'FF8080', 30: '0066CC', 31: 'CCCCFF',
+    32: '000080', 33: 'FF00FF', 34: 'FFFF00', 35: '00FFFF', 36: '800080', 37: '800000', 38: '008080', 39: '0000FF',
+    40: '00CCFF', 41: 'CCFFFF', 42: 'CCFFCC', 43: 'FFFF99', 44: '99CCFF', 45: 'FF99CC', 46: 'CC99FF', 47: 'FFCC99',
+    48: '3366FF', 49: '33CCCC', 50: '99CC00', 51: 'FFCC00', 52: 'FF9900', 53: 'FF6600', 54: '666699', 55: '969696',
+    56: '003366', 57: '339966', 58: '003300', 59: '333300', 60: '993300', 61: '993366', 62: '333399', 63: '333333',
+}
+
+
+def _parse_theme_colors(wb):
+    xml = getattr(wb, 'loaded_theme', None)
+    if not xml:
+        return None
+    try:
+        root = _ET.fromstring(xml)
+        scheme = root.find('.//{*}clrScheme')
+        if scheme is None:
+            return None
+        colors = []
+        for tag in _THEME_ORDER:
+            el = scheme.find(f'{{*}}{tag}')
+            if el is None:
+                colors.append('000000')
+                continue
+            srgb = el.find('{*}srgbClr')
+            sysc = el.find('{*}sysClr')
+            colors.append(
+                (srgb.get('val') if srgb is not None else None)
+                or (sysc.get('lastClr') if sysc is not None else None)
+                or '000000'
+            )
+        return colors
+    except Exception:
+        return None
+
+
+def _apply_tint(hex_color, tint):
+    if not tint:
+        return hex_color.upper()
+    r = int(hex_color[0:2], 16) / 255.0
+    g = int(hex_color[2:4], 16) / 255.0
+    b = int(hex_color[4:6], 16) / 255.0
+    h, l, s = _colorsys.rgb_to_hls(r, g, b)
+    l = l * (1 - tint) + tint if tint >= 0 else l * (1 + tint)
+    l = max(0.0, min(1.0, l))
+    nr, ng, nb = _colorsys.hls_to_rgb(h, l, s)
+    return ''.join(f'{round(v * 255):02X}' for v in (nr, ng, nb))
+
+
+def _resolve_openpyxl_color(color, theme_colors):
+    if color is None:
+        return None
+    typ = getattr(color, 'type', None)
+    if typ == 'rgb' and getattr(color, 'rgb', None):
+        return '#' + color.rgb[-6:]
+    if typ == 'theme' and getattr(color, 'theme', None) is not None and theme_colors:
+        base = theme_colors[color.theme] if color.theme < len(theme_colors) else '000000'
+        return '#' + _apply_tint(base, getattr(color, 'tint', 0) or 0)
+    if typ == 'indexed' and getattr(color, 'indexed', None) in _INDEXED_COLORS:
+        return '#' + _INDEXED_COLORS[color.indexed]
+    return None
+
+
+def _excel_col_name(idx):
+    name = ''
+    n = idx + 1
+    while n:
+        n, rem = divmod(n - 1, 26)
+        name = chr(65 + rem) + name
+    return name
+
+
+def _parse_xlsx_sheets_with_styles(raw_bytes):
+    if not _XLSX_OK:
+        raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
+    wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+    theme_colors = _parse_theme_colors(wb)
+    image_map = _parse_xlsx_images(raw_bytes)
+    sheets = []
+    for ws in wb.worksheets:
+        max_row = ws.max_row or 0
+        max_col = ws.max_column or 0
+        rows2d = []
+        styles2d = []
+        for r in range(1, max_row + 1):
+            row_vals = []
+            row_styles = []
+            for c in range(1, max_col + 1):
+                cell = ws.cell(r, c)
+                row_vals.append(_cell_to_str(cell.value))
+                st = {}
+                fill = cell.fill
+                font = cell.font
+                align = cell.alignment
+                if getattr(fill, 'fill_type', None) and fill.fill_type != 'none':
+                    bg = _resolve_openpyxl_color(fill.fgColor, theme_colors) or _resolve_openpyxl_color(fill.bgColor, theme_colors)
+                    if bg:
+                        st['bg'] = bg
+                fc = _resolve_openpyxl_color(getattr(font, 'color', None), theme_colors)
+                if fc:
+                    st['color'] = fc
+                if getattr(font, 'bold', False):
+                    st['bold'] = True
+                if getattr(font, 'italic', False):
+                    st['italic'] = True
+                if getattr(font, 'sz', None):
+                    st['fontSize'] = font.sz
+                if getattr(font, 'name', None):
+                    st['fontFamily'] = font.name
+                if getattr(align, 'horizontal', None):
+                    st['align'] = align.horizontal
+                row_styles.append(st or None)
+            rows2d.append(row_vals)
+            styles2d.append(row_styles)
+        while rows2d and all(v == '' for v in rows2d[-1]) and all(s is None for s in styles2d[-1]):
+            rows2d.pop()
+            styles2d.pop()
+        if rows2d:
+            nonempty_counts = [sum(1 for v in row if v != '') for row in rows2d]
+            header_idx = max(range(len(rows2d)), key=lambda i: (nonempty_counts[i], -i))
+            if nonempty_counts[header_idx] == 0:
+                header_idx = 0
+        else:
+            header_idx = 0
+        headers = rows2d[header_idx] if rows2d else []
+        header_styles = styles2d[header_idx] if styles2d else []
+        leading_rows = rows2d[:header_idx]
+        trailing_rows = rows2d[header_idx + 1:] if len(rows2d) > header_idx + 1 else []
+        leading_styles = styles2d[:header_idx]
+        trailing_styles = styles2d[header_idx + 1:] if len(styles2d) > header_idx + 1 else []
+        rows = leading_rows + trailing_rows
+        row_styles = leading_styles + trailing_styles
+        title_text = ''
+        title_row_idx = None
+        title_col_idx = None
+        for idx, row in enumerate(leading_rows):
+            nonempty = [(i, v) for i, v in enumerate(row) if v != '']
+            if len(nonempty) == 1 and len(nonempty[0][1]) > len(title_text):
+                title_col_idx, title_text = nonempty[0]
+                title_row_idx = idx
+        if title_row_idx is not None:
+            leading_rows = [r for i, r in enumerate(leading_rows) if i != title_row_idx]
+            leading_styles = [r for i, r in enumerate(leading_styles) if i != title_row_idx]
+        sheets.append({
+            'name': ws.title,
+            'headers': headers,
+            'rows': leading_rows + trailing_rows,
+            'headerStyles': header_styles,
+            'rowStyles': leading_styles + trailing_styles,
+            'images': image_map.get(ws.title, []),
+            'headerRowIndex': header_idx,
+            'titleText': title_text,
+            'titleCol': title_col_idx,
+            'titleSpan': 3 if title_text else 0,
+        })
+    try:
+        debug = [
+            {
+                'name': sh['name'],
+                'rows': len(sh['rows']),
+                'cols': len(sh['headers']),
+                'images': len(sh.get('images', [])),
+                'headerColors': sum(1 for st in sh.get('headerStyles', []) if st and (st.get('bg') or st.get('color'))),
+                'bodyColors': sum(
+                    1
+                    for row in sh.get('rowStyles', [])
+                    for st in row
+                    if st and (st.get('bg') or st.get('color'))
+                ),
+            }
+            for sh in sheets
+        ]
+        print(f'[parse-xlsx] sheets={debug}')
+    except Exception:
+        pass
+    return sheets
+
+
+def _ordered_sheet_rows(sheet):
+    header_idx = int(sheet.get('headerRowIndex', 0) or 0)
+    rows = list(sheet.get('rows', []))
+    header = list(sheet.get('headers', []))
+    leading = rows[:header_idx]
+    trailing = rows[header_idx:]
+    return leading + [header] + trailing
+
+
+def _set_xml_cell_value(cell_el, value):
+    original_t = cell_el.attrib.get('t')
+    for child in list(cell_el):
+        if child.tag.endswith(('v', 'is', 'f')):
+            cell_el.remove(child)
+    if value == '' or value is None:
+        cell_el.attrib.pop('t', None)
+        return
+    py_val = _str_to_cell(value) if isinstance(value, str) else value
+    force_string = original_t in ('s', 'str', 'inlineStr')
+    if isinstance(value, str):
+        stripped = value.strip()
+        has_ambiguous_leading_zero = (
+            stripped.startswith('0')
+            and len(stripped) > 1
+            and stripped[1:].isdigit()
+        ) or (
+            stripped.startswith('-0')
+            and len(stripped) > 2
+            and stripped[2:].isdigit()
+        )
+        if has_ambiguous_leading_zero:
+            force_string = True
+    if isinstance(py_val, bool):
+        cell_el.set('t', 'b')
+        v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
+        v.text = '1' if py_val else '0'
+        return
+    if isinstance(py_val, (int, float)) and not force_string:
+        cell_el.attrib.pop('t', None)
+        v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
+        v.text = str(py_val)
+        return
+    cell_el.set('t', 'inlineStr')
+    is_el = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'is')
+    t_el = _ET.SubElement(is_el, cell_el.tag[:-1] + 't')
+    if isinstance(value, str) and (value.startswith(' ') or value.endswith(' ') or '\n' in value):
+        t_el.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+    t_el.text = '' if value is None else str(value)
+
+
+def _write_xlsx_from_template(raw_bytes, sheets):
+    ns = {
+        'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+        'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+    }
+    by_name = {sh.get('name', ''): sh for sh in sheets}
+    zin = io.BytesIO(raw_bytes)
+    zout = io.BytesIO()
+    with _zipfile.ZipFile(zin, 'r') as src, _zipfile.ZipFile(zout, 'w', _zipfile.ZIP_DEFLATED) as dst:
+        wb = _ET.fromstring(src.read('xl/workbook.xml'))
+        wb_rels = _ET.fromstring(src.read('xl/_rels/workbook.xml.rels'))
+        rel_targets = {rel.attrib['Id']: rel.attrib['Target'] for rel in wb_rels.findall('{*}Relationship')}
+        sheet_paths = {}
+        for sheet in wb.findall('a:sheets/a:sheet', ns):
+            rid = sheet.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+            target = rel_targets.get(rid)
+            if target:
+                sheet_paths[sheet.attrib.get('name', '')] = _ppath.normpath('xl/' + target)
+
+        for name in src.namelist():
+            data = src.read(name)
+            if name in sheet_paths.values():
+                sheet_name = next((k for k, v in sheet_paths.items() if v == name), None)
+                sheet = by_name.get(sheet_name or '')
+                if sheet:
+                    root = _ET.fromstring(data)
+                    sheet_data = root.find('a:sheetData', ns)
+                    if sheet_data is not None:
+                        rows = _ordered_sheet_rows(sheet)
+                        max_row = max(len(rows), len(sheet_data.findall('a:row', ns)))
+                        max_col = max([len(r) for r in rows] + [0])
+                        row_map = {
+                            int(row.attrib.get('r', idx + 1)): row
+                            for idx, row in enumerate(sheet_data.findall('a:row', ns))
+                        }
+                        cell_maps = {}
+                        for rnum, row_el in row_map.items():
+                            cmap = {}
+                            for cell in row_el.findall('a:c', ns):
+                                ref = cell.attrib.get('r', '')
+                                col = ''.join(ch for ch in ref if ch.isalpha())
+                                cmap[col] = cell
+                            cell_maps[rnum] = cmap
+                        for child in list(sheet_data):
+                            sheet_data.remove(child)
+                        for r in range(1, max_row + 1):
+                            old_row = row_map.get(r)
+                            row_el = _ET.Element(old_row.tag if old_row is not None else f'{{{ns["a"]}}}row')
+                            if old_row is not None:
+                                row_el.attrib.update(old_row.attrib)
+                            row_el.set('r', str(r))
+                            values = rows[r - 1] if r - 1 < len(rows) else []
+                            old_cells = cell_maps.get(r, {})
+                            for c in range(max(max_col, len(values))):
+                                col_name = _excel_col_name(c)
+                                ref = f'{col_name}{r}'
+                                old_cell = old_cells.get(col_name)
+                                val = values[c] if c < len(values) else ''
+                                if old_cell is None and (val == '' or val is None):
+                                    continue
+                                cell_el = _ET.fromstring(_ET.tostring(old_cell)) if old_cell is not None else _ET.Element(f'{{{ns["a"]}}}c')
+                                cell_el.set('r', ref)
+                                _set_xml_cell_value(cell_el, val)
+                                row_el.append(cell_el)
+                            sheet_data.append(row_el)
+                        dim = root.find('a:dimension', ns)
+                        if dim is not None and max_row and max_col:
+                            dim.set('ref', f'A1:{_excel_col_name(max_col - 1)}{max_row}')
+                        data = _ET.tostring(root, encoding='utf-8', xml_declaration=True)
+            dst.writestr(name, data)
+    return zout.getvalue()
+
+
+def _parse_xlsx_images(raw_bytes):
+    ns = {
+        'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+        'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+        'xdr': 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing',
+        'd': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+        'pr': 'http://schemas.openxmlformats.org/package/2006/relationships',
+    }
+    out = {}
+    try:
+        with _zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+            wb = _ET.fromstring(zf.read('xl/workbook.xml'))
+            wb_rels = _ET.fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+            rel_targets = {rel.attrib['Id']: rel.attrib['Target'] for rel in wb_rels.findall('{*}Relationship')}
+            for sheet in wb.findall('a:sheets/a:sheet', ns):
+                name = sheet.attrib.get('name', '')
+                rid = sheet.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+                target = rel_targets.get(rid)
+                if not target:
+                    continue
+                sheet_path = _ppath.normpath('xl/' + target)
+                rels_path = _ppath.normpath(_ppath.join(_ppath.dirname(sheet_path), '_rels', _ppath.basename(sheet_path) + '.rels'))
+                if rels_path not in zf.namelist():
+                    continue
+                sheet_rels = _ET.fromstring(zf.read(rels_path))
+                sheet_rel_targets = {rel.attrib['Id']: rel.attrib['Target'] for rel in sheet_rels.findall('{*}Relationship')}
+                sheet_xml = _ET.fromstring(zf.read(sheet_path))
+                drawing = sheet_xml.find('a:drawing', ns)
+                if drawing is None:
+                    continue
+                drawing_rid = drawing.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+                drawing_target = sheet_rel_targets.get(drawing_rid)
+                if not drawing_target:
+                    continue
+                drawing_path = _ppath.normpath(_ppath.join(_ppath.dirname(sheet_path), drawing_target))
+                drawing_rels_path = _ppath.normpath(_ppath.join(_ppath.dirname(drawing_path), '_rels', _ppath.basename(drawing_path) + '.rels'))
+                if drawing_path not in zf.namelist() or drawing_rels_path not in zf.namelist():
+                    continue
+                drawing_xml = _ET.fromstring(zf.read(drawing_path))
+                drawing_rels = _ET.fromstring(zf.read(drawing_rels_path))
+                drawing_rel_targets = {rel.attrib['Id']: rel.attrib['Target'] for rel in drawing_rels.findall('{*}Relationship')}
+                images = []
+                for anchor in drawing_xml.findall('xdr:twoCellAnchor', ns) + drawing_xml.findall('xdr:oneCellAnchor', ns):
+                    blip = anchor.find('.//d:blip', ns)
+                    if blip is None:
+                        continue
+                    embed = blip.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                    media_target = drawing_rel_targets.get(embed)
+                    if not media_target:
+                        continue
+                    media_path = _ppath.normpath(_ppath.join(_ppath.dirname(drawing_path), media_target))
+                    if media_path not in zf.namelist():
+                        continue
+                    data = zf.read(media_path)
+                    ext = _ppath.splitext(media_path)[1].lower()
+                    mime = {
+                        '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg',
+                        '.png': 'image/png',
+                        '.gif': 'image/gif',
+                    }.get(ext, 'application/octet-stream')
+                    fr = anchor.find('xdr:from', ns)
+                    if fr is not None:
+                        row = int(fr.findtext('xdr:row', default='0', namespaces=ns))
+                        col = int(fr.findtext('xdr:col', default='0', namespaces=ns))
+                    else:
+                        row = col = 0
+                    images.append({
+                        'row': row,
+                        'col': col,
+                        'src': f'data:{mime};base64,' + base64.b64encode(data).decode('ascii'),
+                    })
+                if images:
+                    out[name] = images
+    except Exception:
+        return {}
+    return out
 
 
 def _parse_xlsx(raw_bytes):
@@ -250,8 +638,17 @@ class Handler(BaseHTTPRequestHandler):
             # Detect xlsx by extension OR by zip magic bytes (PK\x03\x04) — gh.path may lack extension
             is_xlsx = path.lower().endswith('.xlsx') or raw_bytes[:4] == b'PK\x03\x04'
             if is_xlsx:
-                # Return raw bytes as base64 — browser parses with SheetJS (no openpyxl needed)
-                self._json({'rawB64': base64.b64encode(raw_bytes).decode('ascii'), 'sha': sha, 'format': 'xlsx'})
+                try:
+                    sheets = _parse_xlsx_sheets_with_styles(raw_bytes)
+                    self._json({
+                        'sheets': sheets,
+                        'rawB64': base64.b64encode(raw_bytes).decode('ascii'),
+                        'sha': sha,
+                        'format': 'xlsx',
+                    })
+                except Exception:
+                    # Fallback to raw bytes if server-side style parsing fails
+                    self._json({'rawB64': base64.b64encode(raw_bytes).decode('ascii'), 'sha': sha, 'format': 'xlsx'})
             else:
                 try:
                     content = raw_bytes.decode('utf-8-sig')
@@ -310,6 +707,27 @@ class Handler(BaseHTTPRequestHandler):
                 print(f'[save-xlsx] ERROR: {e}')
                 self._json({'ok': False, 'error': str(e)})
             return
+        if self.path == '/api/parse-xlsx':
+            if not _XLSX_OK:
+                self._json({'error': 'openpyxl not installed — run: pip install openpyxl'}); return
+            try:
+                sheets = _parse_xlsx_sheets_with_styles(body)
+            except Exception as e:
+                self._json({'error': str(e)}); return
+            self._json({'ok': True, 'sheets': sheets})
+            return
+        if self.path == '/api/build-xlsx-from-template':
+            try:
+                raw = _write_xlsx_from_template(body, state.sheets)
+            except Exception as e:
+                self._json({'error': str(e)}); return
+            self.send_response(200)
+            self.send_header('Content-Type',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            self.send_header('Content-Length', str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
@@ -348,6 +766,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/api/update':
             state.headers = data.get('headers', state.headers)
             state.rows    = data.get('rows',    state.rows)
+            active = state.sheets[state.active_sheet]
+            active['titleText'] = data.get('titleText', active.get('titleText', ''))
+            active['titleCol'] = data.get('titleCol', active.get('titleCol', 3))
+            active['titleSpan'] = data.get('titleSpan', active.get('titleSpan', 3))
             self._json({'ok': True})
 
         elif self.path == '/api/save':
