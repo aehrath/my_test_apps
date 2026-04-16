@@ -43,6 +43,40 @@
   }
   #toolbar button:hover { background: #4e6a84; }
   #toolbar button:active { background: #5a7a96; }
+  .toolbar-menu {
+    position: relative;
+  }
+  .toolbar-menu-panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 180px;
+    display: none;
+    padding: 4px;
+    background: #243447;
+    border: 1px solid #4a6278;
+    border-radius: 6px;
+    box-shadow: 0 8px 18px rgba(0,0,0,.28);
+    z-index: 80;
+  }
+  .toolbar-menu.open .toolbar-menu-panel { display: block; }
+  .toolbar-menu-panel button {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 4px;
+    padding: 6px 8px;
+    text-align: left;
+  }
+  .toolbar-menu-panel button:hover { background: #30475f !important; }
+  .menu-shortcut {
+    color: #9fb3c8;
+    font-size: 11px;
+  }
 
   .sep { width: 1px; height: 24px; background: #4a6278; margin: 0 4px; }
 
@@ -418,11 +452,16 @@
 <body>
 
 <div id="toolbar">
-  <button onclick="openFile()">📂 Open</button>
-  <button onclick="saveFile()">💾 Save</button>
-  <button onclick="saveAs()">Save As…</button>
-  <button onclick="downloadFile('csv')"  title="Download as CSV">⬇ CSV</button>
-  <button onclick="downloadFile('xlsx')" title="Download as Excel">⬇ XLSX</button>
+  <div class="toolbar-menu" id="file-menu">
+    <button onclick="toggleFileMenu(event)">File ▾</button>
+    <div class="toolbar-menu-panel">
+      <button onclick="menuAction(openFile)"><span>Open…</span><span class="menu-shortcut">Ctrl/Cmd+O</span></button>
+      <button onclick="menuAction(saveFile)"><span>Save</span><span class="menu-shortcut">Ctrl/Cmd+S</span></button>
+      <button onclick="menuAction(saveAs)"><span>Save As…</span><span class="menu-shortcut">Ctrl/Cmd+Shift+S</span></button>
+      <button onclick="menuAction(() => downloadFile('csv'))"><span>Download CSV</span><span class="menu-shortcut">Ctrl/Cmd+Shift+C</span></button>
+      <button onclick="menuAction(() => downloadFile('xlsx'))"><span>Download XLSX</span><span class="menu-shortcut">Ctrl/Cmd+Shift+X</span></button>
+    </div>
+  </div>
   <div class="sep"></div>
   <button onclick="addRow()">+ Row</button>
   <button onclick="deleteSelectedRow()">− Row</button>
@@ -634,6 +673,20 @@ let sortAsc = true;
 let searchTerm = '';
 let highlightCells = new Set(); // "r,c"
 let _zoomPercent = 100;
+
+function toggleFileMenu(e) {
+  e?.stopPropagation();
+  document.getElementById('file-menu')?.classList.toggle('open');
+}
+
+function closeFileMenu() {
+  document.getElementById('file-menu')?.classList.remove('open');
+}
+
+function menuAction(fn) {
+  closeFileMenu();
+  fn();
+}
 
 function toXlsxCellValue(val) {
   if (val === '' || val == null) return null;
@@ -856,6 +909,7 @@ async function parseXlsxBuffer(buf) {
   applyZoom();
   render();
   document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('click', closeFileMenu);
 })();
 
 // ── Rendering ──────────────────────────────────────────────────────────────
@@ -1422,9 +1476,13 @@ function onKeyDown(e) {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
     e.preventDefault();
     e.shiftKey ? saveAs() : saveFile();
+    return;
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 'o') { e.preventDefault(); openFile(); }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); downloadFile('csv'); return; }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'x') { e.preventDefault(); downloadFile('xlsx'); return; }
   if (e.key === 'Escape' && _inlineDiff) { e.preventDefault(); clearInlineDiff(); }
+  if (e.key === 'Escape') closeFileMenu();
 }
 
 function focusCell(r, c) {
