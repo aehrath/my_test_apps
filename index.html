@@ -87,7 +87,7 @@
   /* Header */
   thead th {
     position: sticky;
-    top: 0;
+    top: calc(32px * var(--sheet-zoom));
     z-index: 2;
     background: #dce8f7;
     border: 1px solid #b8cfe8;
@@ -103,6 +103,41 @@
   }
   thead th:hover { background: #c8d8ee; }
   thead th.row-num { min-width: calc(42px * var(--sheet-zoom)); width: calc(42px * var(--sheet-zoom)); cursor: default; text-align: center; }
+  #excel-col-row th {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: #eef3f9;
+    border-color: #cfd8e3;
+    text-align: center;
+    cursor: default;
+  }
+  #excel-col-row th:hover { background: #eef3f9; }
+  #excel-col-row th.row-num { background: #e5ebf3; }
+  #excel-col-row.hidden-row th {
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    color: transparent !important;
+    overflow: hidden;
+    cursor: default;
+  }
+  #header-row.header-sizer-row th {
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    color: transparent !important;
+    overflow: hidden;
+    cursor: default;
+  }
 
   /* Rows */
   tbody tr.even { background: #fff; }
@@ -403,7 +438,10 @@
 
 <div id="table-wrap">
   <table id="csv-table">
-    <thead><tr id="header-row"></tr></thead>
+    <thead>
+      <tr id="excel-col-row"></tr>
+      <tr id="header-row"></tr>
+    </thead>
     <tbody id="table-body"></tbody>
   </table>
 </div>
@@ -971,39 +1009,96 @@ function autoResize() {
   const PAD = 28, MIN = 60, MAX = 500;
   const scale = _zoomPercent / 100;
   const ths = document.querySelectorAll('#header-row th');
+  const excelThs = document.querySelectorAll('#excel-col-row th');
+  const bodyMergeMap = buildMergeMaps('body');
+  const headerMergeMap = buildMergeMaps('header');
   const rowNumWidth = Math.round(42 * scale) + 'px';
   if (ths[0]) {
     ths[0].style.width = rowNumWidth;
     ths[0].style.minWidth = rowNumWidth;
   }
+  if (excelThs[0]) {
+    excelThs[0].style.width = rowNumWidth;
+    excelThs[0].style.minWidth = rowNumWidth;
+  }
 
   S.headers.forEach((header, c) => {
     _measureCtx.font = 'bold 13px Arial';
-    let maxPx = _measureCtx.measureText(header).width;
+    const headerMerge = headerMergeMap.starts.get(mergeKey('header', 0, c));
+    let maxPx = _measureCtx.measureText(header).width / (headerMerge?.colspan || 1);
 
     _measureCtx.font = '13px Arial';
-    for (const row of S.rows) {
-      const w = _measureCtx.measureText(row[c] ?? '').width;
+    for (let r = 0; r < S.rows.length; r++) {
+      if (bodyMergeMap.covered.has(mergeKey('body', r, c))) continue;
+      const merge = bodyMergeMap.starts.get(mergeKey('body', r, c));
+      const span = merge?.colspan || 1;
+      const w = _measureCtx.measureText(S.rows[r]?.[c] ?? '').width / span;
       if (w > maxPx) maxPx = w;
     }
 
     const width = Math.max(MIN * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + PAD) * scale));
     const th = ths[c + 1]; // +1 to skip the row-number corner
+    const excelTh = excelThs[c + 1];
     if (th) {
       th.style.width    = width + 'px';
       th.style.minWidth = width + 'px';
     }
+    if (excelTh) {
+      excelTh.style.width = width + 'px';
+      excelTh.style.minWidth = width + 'px';
+    }
   });
 }
 
+function excelColName(idx) {
+  let name = '';
+  let n = idx + 1;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    name = String.fromCharCode(65 + rem) + name;
+    n = Math.floor((n - 1) / 26);
+  }
+  return name;
+}
+
+function hasExcelLetterHeaders() {
+  return S.headers.length > 0 && S.headers.every((h, i) => h === excelColName(i));
+}
+
 function renderHeaders() {
+  const letterHeaders = hasExcelLetterHeaders();
+  const excelTr = document.getElementById('excel-col-row');
   const tr = document.getElementById('header-row');
   const mergeMap = buildMergeMaps('header');
+  excelTr.innerHTML = '';
   tr.innerHTML = '';
-  const corner = th('#', 'row-num');
-  tr.appendChild(corner);
+  excelTr.className = letterHeaders ? '' : 'hidden-row';
+  tr.className = letterHeaders ? 'header-sizer-row' : '';
+  if (letterHeaders) {
+    excelTr.appendChild(th('', 'row-num'));
+    tr.appendChild(th('', 'row-num'));
+  } else {
+    const corner = th('#', 'row-num');
+    tr.appendChild(corner);
+  }
 
   S.headers.forEach((h, i) => {
+    if (letterHeaders) {
+      const excelTh = document.createElement('th');
+      excelTh.textContent = excelColName(i);
+      excelTh.style.minWidth = '0';
+      excelTh.dataset.colStart = String(i);
+      excelTh.dataset.colSpan = '1';
+      if (selectedCols.has(i)) excelTh.classList.add('selected-col');
+      excelTr.appendChild(excelTh);
+    }
+
+    if (letterHeaders) {
+      const sizer = document.createElement('th');
+      sizer.style.minWidth = '0';
+      tr.appendChild(sizer);
+      return;
+    }
     if (mergeMap.covered.has(mergeKey('header', 0, i))) return;
     const el = document.createElement('th');
     const merge = mergeMap.starts.get(mergeKey('header', 0, i));
