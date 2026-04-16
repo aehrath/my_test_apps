@@ -77,6 +77,12 @@
     border-radius: 6px;
     box-shadow: 0 1px 4px rgba(0,0,0,.15);
   }
+  #excel-col-bar {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    background: #fff;
+  }
 
   #sheet-banner {
     display: none;
@@ -137,7 +143,7 @@
   /* Header */
   thead th {
     position: sticky;
-    top: 0;
+    top: calc(32px * var(--sheet-zoom));
     z-index: 2;
     background: #dce8f7;
     border: 1px solid #b8cfe8;
@@ -153,6 +159,17 @@
   }
   thead th:hover { background: #c8d8ee; }
   thead th.row-num { min-width: calc(42px * var(--sheet-zoom)); width: calc(42px * var(--sheet-zoom)); cursor: default; text-align: center; }
+  #excel-col-row th {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: #eef3f9;
+    border-color: #cfd8e3;
+    text-align: center;
+    cursor: default;
+  }
+  #excel-col-row th:hover { background: #eef3f9; }
+  #excel-col-row th.row-num { background: #e5ebf3; }
 
   /* Rows */
   tbody tr.even { background: #fff; }
@@ -448,6 +465,9 @@
 </div>
 
 <div id="table-wrap">
+  <table id="excel-col-bar">
+    <thead><tr id="excel-col-row"></tr></thead>
+  </table>
   <div id="sheet-banner"></div>
   <table id="csv-table">
     <thead><tr id="header-row"></tr></thead>
@@ -933,13 +953,33 @@ function autoResize() {
   });
 }
 
+function excelColName(idx) {
+  let name = '';
+  let n = idx + 1;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    name = String.fromCharCode(65 + rem) + name;
+    n = Math.floor((n - 1) / 26);
+  }
+  return name;
+}
+
 function renderHeaders() {
+  const excelTr = document.getElementById('excel-col-row');
   const tr = document.getElementById('header-row');
+  excelTr.innerHTML = '';
   tr.innerHTML = '';
+  excelTr.appendChild(th('', 'row-num'));
   const corner = th('#', 'row-num');
   tr.appendChild(corner);
 
   S.headers.forEach((h, i) => {
+    const excelTh = document.createElement('th');
+    excelTh.textContent = excelColName(i);
+    excelTh.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
+    if (selectedCols.has(i)) excelTh.classList.add('selected-col');
+    excelTr.appendChild(excelTh);
+
     const el = document.createElement('th');
     el.title = 'Click to sort/select • Shift/Cmd+click to multi-select • Double-click to rename';
     el.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
