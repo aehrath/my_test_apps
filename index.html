@@ -6,6 +6,7 @@
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
+  :root { --sheet-zoom: 1; }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
@@ -79,9 +80,9 @@
 
   #sheet-banner {
     display: none;
-    grid-template-columns: repeat(9, minmax(80px, 1fr));
+    grid-template-columns: repeat(9, minmax(calc(80px * var(--sheet-zoom)), 1fr));
     gap: 0;
-    padding: 12px 14px 0;
+    padding: calc(12px * var(--sheet-zoom)) calc(14px * var(--sheet-zoom)) 0;
     background: #fff;
     align-items: stretch;
   }
@@ -90,12 +91,12 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 74px;
+    min-height: calc(74px * var(--sheet-zoom));
     border: 1px solid #dde;
     background: #fff;
   }
   .sheet-banner-logo img {
-    max-height: 64px;
+    max-height: calc(64px * var(--sheet-zoom));
     width: auto;
     object-fit: contain;
   }
@@ -103,13 +104,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 74px;
+    min-height: calc(74px * var(--sheet-zoom));
     border: 1px solid #dde;
     background: #fff;
-    font: 700 18px/1.25 Arial, sans-serif;
+    font: 700 calc(18px * var(--sheet-zoom))/1.25 Arial, sans-serif;
     color: #2c3e50;
     text-align: center;
-    padding: 8px 12px;
+    padding: calc(8px * var(--sheet-zoom)) calc(12px * var(--sheet-zoom));
   }
   .sheet-banner-title input {
     width: 100%;
@@ -128,7 +129,8 @@
 
   table {
     border-collapse: collapse;
-    min-width: 100%;
+    width: max-content;
+    min-width: calc(100% * var(--sheet-zoom));
     table-layout: fixed;
   }
 
@@ -139,7 +141,7 @@
     z-index: 2;
     background: #dce8f7;
     border: 1px solid #b8cfe8;
-    padding: 6px 8px;
+    padding: calc(6px * var(--sheet-zoom)) calc(8px * var(--sheet-zoom));
     font-weight: 700;
     text-align: left;
     cursor: pointer;
@@ -147,10 +149,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     user-select: none;
-    min-width: 100px;
+    min-width: calc(100px * var(--sheet-zoom));
   }
   thead th:hover { background: #c8d8ee; }
-  thead th.row-num { min-width: 42px; width: 42px; cursor: default; text-align: center; }
+  thead th.row-num { min-width: calc(42px * var(--sheet-zoom)); width: calc(42px * var(--sheet-zoom)); cursor: default; text-align: center; }
 
   /* Rows */
   tbody tr.even { background: #fff; }
@@ -165,12 +167,12 @@
   tbody td {
     border: 1px solid #dde;
     padding: 0;
-    height: 28px;
+    height: calc(28px * var(--sheet-zoom));
   }
   tbody td.row-num {
     text-align: center;
     color: #888;
-    font-size: 11px;
+    font-size: calc(11px * var(--sheet-zoom));
     background: #f0f0f0;
     border-right: 2px solid #ccc;
     cursor: pointer;
@@ -183,9 +185,9 @@
     height: 100%;
     border: none;
     background: transparent;
-    padding: 4px 8px;
+    padding: calc(4px * var(--sheet-zoom)) calc(8px * var(--sheet-zoom));
     font-family: inherit;
-    font-size: 13px;
+    font-size: calc(13px * var(--sheet-zoom));
     color: #222;
     outline: none;
     display: block;
@@ -848,12 +850,10 @@ function render() {
 }
 
 function applyZoom() {
-  const wrap = document.getElementById('table-wrap');
   const label = document.getElementById('zoom-display');
-  if (wrap) {
-    wrap.style.zoom = String(_zoomPercent / 100);
-  }
+  document.documentElement.style.setProperty('--sheet-zoom', String(_zoomPercent / 100));
   if (label) label.textContent = `${_zoomPercent}%`;
+  autoResize();
 }
 
 function setZoom(next) {
@@ -911,6 +911,7 @@ function renderSheetImages() {
 const _measureCtx = document.createElement('canvas').getContext('2d'); // reused across calls
 function autoResize() {
   const PAD = 28, MIN = 60, MAX = 500;
+  const scale = _zoomPercent / 100;
   const ths = document.querySelectorAll('#header-row th');
 
   S.headers.forEach((header, c) => {
@@ -923,7 +924,7 @@ function autoResize() {
       if (w > maxPx) maxPx = w;
     }
 
-    const width = Math.max(MIN, Math.min(MAX, Math.ceil(maxPx) + PAD));
+    const width = Math.max(MIN * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + PAD) * scale));
     const th = ths[c + 1]; // +1 to skip the row-number corner
     if (th) {
       th.style.width    = width + 'px';
@@ -941,7 +942,7 @@ function renderHeaders() {
   S.headers.forEach((h, i) => {
     const el = document.createElement('th');
     el.title = 'Click to sort/select • Shift/Cmd+click to multi-select • Double-click to rename';
-    el.style.minWidth = '120px';
+    el.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
     if (selectedCols.has(i)) el.classList.add('selected-col');
     const arrow = sortCol === i ? (sortAsc ? ' ▲' : ' ▼') : '';
     el.textContent = h + arrow;
@@ -976,7 +977,7 @@ function applyExcelStyle(td, inp, st) {
   }
   if (st.bold)       { td.style.fontWeight = 'bold';   if (inp) inp.style.fontWeight = 'bold'; }
   if (st.italic)     { td.style.fontStyle  = 'italic'; if (inp) inp.style.fontStyle  = 'italic'; }
-  if (st.fontSize)   { const px = Math.round(st.fontSize * 1.33) + 'px'; td.style.fontSize = px; if (inp) inp.style.fontSize = px; }
+  if (st.fontSize)   { const px = Math.round(st.fontSize * 1.33 * (_zoomPercent / 100)) + 'px'; td.style.fontSize = px; if (inp) inp.style.fontSize = px; }
   if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
 }
 
