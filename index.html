@@ -77,6 +77,21 @@
     border-radius: 6px;
     box-shadow: 0 1px 4px rgba(0,0,0,.15);
   }
+  #sheet-canvas {
+    position: relative;
+    width: max-content;
+    min-width: calc(100% * var(--sheet-zoom));
+  }
+  #sheet-image-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .sheet-image {
+    position: absolute;
+    object-fit: contain;
+  }
   table {
     border-collapse: collapse;
     width: max-content;
@@ -437,13 +452,16 @@
 </div>
 
 <div id="table-wrap">
-  <table id="csv-table">
-    <thead>
-      <tr id="excel-col-row"></tr>
-      <tr id="header-row"></tr>
-    </thead>
-    <tbody id="table-body"></tbody>
-  </table>
+  <div id="sheet-canvas">
+    <div id="sheet-image-layer"></div>
+    <table id="csv-table">
+      <thead>
+        <tr id="excel-col-row"></tr>
+        <tr id="header-row"></tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
 </div>
 
 <div id="sheet-tabs">
@@ -604,6 +622,7 @@ let _xlsxWb = null;          // ExcelJS workbook for style-preserving save
 let _xlsxOrigBuf = null;     // original ArrayBuffer — reload ExcelJS lazily if load failed
 let _cellStyles = null;      // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
 let _xlsxSheetOffsets = {};  // { sheetName: {rowOff, colOff} } — Excel row/col where sheet data starts (1-based)
+let _sheetImages = [];
 let _sheetMerges = [];
 let selectedRows = new Set();   // indices of selected rows
 let selectedCols = new Set();   // indices of selected columns
@@ -843,6 +862,7 @@ async function parseXlsxBuffer(buf) {
 function render() {
   renderHeaders();
   renderRows();
+  renderSheetImages();
   updateStatus();
   autoResize();
   renderSheetTabs();
@@ -877,6 +897,42 @@ function normalizeMerge(m) {
   const rowspan = Math.max(1, +m.rowspan || 1);
   const colspan = Math.max(1, +m.colspan || 1);
   return { area, row, col, rowspan, colspan };
+}
+
+function renderSheetImages() {
+  const layer = document.getElementById('sheet-image-layer');
+  if (!layer) return;
+  layer.innerHTML = '';
+  if (!_sheetImages?.length) return;
+
+  const topBar = document.getElementById('excel-col-row');
+  const headerRow = document.getElementById('header-row');
+  const rowHeight = Math.round(28 * (_zoomPercent / 100));
+  const topBarHeight = topBar && !topBar.classList.contains('hidden-row') ? topBar.getBoundingClientRect().height : 0;
+  const headerHeight = headerRow && !headerRow.classList.contains('header-sizer-row') ? headerRow.getBoundingClientRect().height : 0;
+  const headerOffset = topBarHeight + headerHeight;
+
+  const colLefts = [];
+  let left = Math.round(42 * (_zoomPercent / 100));
+  const ths = [...document.querySelectorAll('#header-row th')].slice(1);
+  ths.forEach((th, idx) => {
+    colLefts[idx] = left;
+    left += th.getBoundingClientRect().width || 0;
+  });
+
+  _sheetImages.forEach((img, idx) => {
+    const el = document.createElement('img');
+    el.className = 'sheet-image';
+    el.src = img.src;
+    el.alt = img.alt || `Sheet image ${idx + 1}`;
+    const col = Math.max(0, img.col || 0);
+    const row = Math.max(0, img.row || 0);
+    el.style.left = `${colLefts[col] ?? left}px`;
+    el.style.top = `${headerOffset + row * rowHeight}px`;
+    el.style.maxWidth = `${Math.round(180 * (_zoomPercent / 100))}px`;
+    el.style.maxHeight = `${Math.round(72 * (_zoomPercent / 100))}px`;
+    layer.appendChild(el);
+  });
 }
 
 function normalizedSheetMerges() {
@@ -1598,9 +1654,11 @@ function openFile() {
       S = await fetch('/api/data').then(r => r.json());
       if (isXlsx) {
         _cellStyles = { headerStyles: sheets[0].headerStyles || [], rowStyles: sheets[0].rowStyles || [] };
+        _sheetImages = sheets[0].images || [];
         _sheetMerges = sheets[0].merges || [];
       } else {
         _cellStyles = null;
+        _sheetImages = [];
         _sheetMerges = [];
       }
       setBaseline(S.headers, S.rows);
@@ -2061,6 +2119,7 @@ async function loadVersion(sha) {
       headerStyles: sheets[0]?.headerStyles || [],
       rowStyles: sheets[0]?.rowStyles || [],
     };
+    _sheetImages = sheets[0]?.images || [];
     _sheetMerges = sheets[0]?.merges || [];
     setBaseline(S.headers, S.rows);
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
@@ -2113,6 +2172,7 @@ async function loadVersion(sha) {
       headerStyles: sheets[0]?.headerStyles || [],
       rowStyles: sheets[0]?.rowStyles || [],
     };
+    _sheetImages = sheets[0]?.images || [];
     _sheetMerges = sheets[0]?.merges || [];
     setBaseline(S.headers, S.rows);
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
@@ -2126,6 +2186,7 @@ async function loadVersion(sha) {
   const { headers, rows } = _parseVersionData(data);
   S.headers = headers; S.rows = rows;
   _cellStyles = null;
+  _sheetImages = [];
   _sheetMerges = [];
   setBaseline(headers, rows);
   selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
@@ -2388,6 +2449,7 @@ async function switchSheet(idx) {
   const allData = await fetch('/api/all-sheets').then(r => r.json());
   const activeSh = allData.sheets[idx];
   _cellStyles = activeSh ? { headerStyles: activeSh.headerStyles || [], rowStyles: activeSh.rowStyles || [] } : null;
+  _sheetImages = activeSh?.images || [];
   _sheetMerges = activeSh?.merges || [];
   setBaseline(S.headers, S.rows);
   resetSelection(); clearSearch();
