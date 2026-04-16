@@ -428,6 +428,9 @@
   <button onclick="renameColumn()">Rename Col</button>
   <div class="sep"></div>
   <button onclick="autoResize()" title="Fit each column to its widest content">⇔ Auto Resize</button>
+  <button onclick="zoomOut()" title="Zoom out">− Zoom</button>
+  <button onclick="zoomIn()" title="Zoom in">+ Zoom</button>
+  <span id="zoom-display" style="font-size:11px;color:#aac;min-width:44px;text-align:center">100%</span>
   <div class="sep"></div>
   <input id="search-input" type="text" placeholder="🔍 Search…" oninput="applySearch(this.value)">
   <button onclick="clearSearch()">✕</button>
@@ -621,6 +624,7 @@ let sortCol = -1;
 let sortAsc = true;
 let searchTerm = '';
 let highlightCells = new Set(); // "r,c"
+let _zoomPercent = 100;
 
 function toXlsxCellValue(val) {
   if (val === '' || val == null) return null;
@@ -828,6 +832,7 @@ async function parseXlsxBuffer(buf) {
   const res = await fetch('/api/data');
   S = await res.json();
   setBaseline(S.headers, S.rows);
+  applyZoom();
   render();
   document.addEventListener('keydown', onKeyDown);
 })();
@@ -840,6 +845,28 @@ function render() {
   updateStatus();
   autoResize();
   renderSheetTabs();
+}
+
+function applyZoom() {
+  const wrap = document.getElementById('table-wrap');
+  const label = document.getElementById('zoom-display');
+  if (wrap) {
+    wrap.style.zoom = String(_zoomPercent / 100);
+  }
+  if (label) label.textContent = `${_zoomPercent}%`;
+}
+
+function setZoom(next) {
+  _zoomPercent = Math.max(50, Math.min(200, next));
+  applyZoom();
+}
+
+function zoomIn() {
+  setZoom(_zoomPercent + 10);
+}
+
+function zoomOut() {
+  setZoom(_zoomPercent - 10);
 }
 
 function renderSheetImages() {
