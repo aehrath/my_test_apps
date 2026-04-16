@@ -254,26 +254,6 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             'titleCol': title_col_idx,
             'titleSpan': 3 if title_text else 0,
         })
-    try:
-        debug = [
-            {
-                'name': sh['name'],
-                'rows': len(sh['rows']),
-                'cols': len(sh['headers']),
-                'images': len(sh.get('images', [])),
-                'headerColors': sum(1 for st in sh.get('headerStyles', []) if st and (st.get('bg') or st.get('color'))),
-                'bodyColors': sum(
-                    1
-                    for row in sh.get('rowStyles', [])
-                    for st in row
-                    if st and (st.get('bg') or st.get('color'))
-                ),
-            }
-            for sh in sheets
-        ]
-        print(f'[parse-xlsx] sheets={debug}')
-    except Exception:
-        pass
     return sheets
 
 
