@@ -54,6 +54,77 @@ class State:
 state = State()
 
 
+# ── JSON helpers ──────────────────────────────────────────────────────────────
+
+def _json_column_keys(headers):
+    seen = {}
+    keys = []
+    for idx, header in enumerate(headers):
+        base = (header or '').strip() or _excel_col_name(idx)
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        keys.append(base if count == 1 else f'{base}_{count}')
+    return keys
+
+
+def _sheets_to_doc_json(sheets):
+    out = []
+    for sheet in sheets or []:
+        headers = list(sheet.get('headers', []))
+        rows = [list(r) for r in sheet.get('rows', [])]
+        keys = _json_column_keys(headers)
+        sheet_rows = []
+        for row in rows:
+            row_obj = {}
+            for idx, key in enumerate(keys):
+                row_obj[key] = row[idx] if idx < len(row) else ''
+            sheet_rows.append(row_obj)
+        out.append({
+            'name': sheet.get('name', 'Sheet1'),
+            'rows': sheet_rows,
+        })
+    return {'doc': {'sheets': out}}
+
+
+def _doc_json_to_sheets(raw):
+    data = json.loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(data, dict):
+        raise ValueError('JSON must be an object with a doc root')
+    doc = data.get('doc')
+    if not isinstance(doc, dict):
+        raise ValueError('JSON must contain a doc object')
+    raw_sheets = doc.get('sheets')
+    if raw_sheets is None:
+        raw_sheets = doc.get('sheet')
+    if isinstance(raw_sheets, dict):
+        raw_sheets = [raw_sheets]
+    if raw_sheets is None:
+        raw_sheets = []
+    if not isinstance(raw_sheets, list):
+        raise ValueError('doc.sheets must be a list')
+
+    sheets = []
+    for idx, raw_sheet in enumerate(raw_sheets):
+        if not isinstance(raw_sheet, dict):
+            continue
+        name = raw_sheet.get('name') or f'Sheet{idx + 1}'
+        raw_rows = raw_sheet.get('rows', [])
+        if not isinstance(raw_rows, list):
+            raise ValueError(f'rows for sheet "{name}" must be a list')
+        headers = []
+        for row in raw_rows:
+            if not isinstance(row, dict):
+                raise ValueError(f'rows for sheet "{name}" must contain objects')
+            for key in row.keys():
+                if key not in headers:
+                    headers.append(str(key))
+        rows = []
+        for row in raw_rows:
+            rows.append([_cell_to_str(row.get(header, '')) for header in headers])
+        sheets.append({'name': name, 'headers': headers, 'rows': rows})
+    return sheets or [{'name': 'Sheet1', 'headers': [], 'rows': []}]
+
+
 # ── Excel helpers ─────────────────────────────────────────────────────────────
 
 import datetime as _dt
@@ -802,6 +873,14 @@ class Handler(BaseHTTPRequestHandler):
                 state.sheets       = raw_sheets
                 state.active_sheet = 0
                 state.filetype     = 'xlsx'
+            elif fmt == 'json':
+                content = data.get('content', '')
+                try:
+                    state.sheets = _doc_json_to_sheets(content)
+                except Exception as e:
+                    self._json({'ok': False, 'error': str(e)}); return
+                state.active_sheet = 0
+                state.filetype     = 'json'
             else:
                 content  = data.get('content', '')
                 reader   = csv.reader(io.StringIO(content))
@@ -850,6 +929,9 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         self._json({'ok': False, 'error': 'xlsx_needs_bytes'}); return
                     state.filetype = 'xlsx'
+                elif p.suffix.lower() == '.json':
+                    p.write_text(json.dumps(_sheets_to_doc_json(state.sheets), ensure_ascii=False, indent=2), encoding='utf-8')
+                    state.filetype = 'json'
                 else:
                     with open(filepath, 'w', newline='', encoding='utf-8') as f:
                         csv.writer(f).writerow(state.headers)
@@ -872,6 +954,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-Type',
                     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                self.send_header('Content-Length', str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            elif fmt == 'json':
+                raw = json.dumps(_sheets_to_doc_json(state.sheets), ensure_ascii=False, indent=2).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.send_header('Content-Length', str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
@@ -938,6 +1027,10 @@ class Handler(BaseHTTPRequestHandler):
             # Encode content (CSV only — xlsx is handled by /api/github/commit-xlsx)
             if state.filetype == 'xlsx':
                 self._json({'error': 'use /api/github/commit-xlsx for xlsx files'}); return
+            elif state.filetype == 'json':
+                encoded = base64.b64encode(
+                    json.dumps(_sheets_to_doc_json(state.sheets), ensure_ascii=False, indent=2).encode('utf-8')
+                ).decode()
             else:
                 buf = io.StringIO()
                 csv.writer(buf).writerow(state.headers)
@@ -1005,6 +1098,10 @@ def main():
                 state.sheets       = [{'name': 'Sheet1', 'headers': headers, 'rows': rows}]
                 state.active_sheet = 0
                 state.filetype     = 'xlsx'
+            elif path.suffix.lower() == '.json':
+                state.sheets       = _doc_json_to_sheets(path.read_text(encoding='utf-8'))
+                state.active_sheet = 0
+                state.filetype     = 'json'
             else:
                 with open(path, newline='', encoding='utf-8-sig') as f:
                     rows = list(csv.reader(f))

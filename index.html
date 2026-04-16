@@ -467,6 +467,7 @@
       <button onclick="menuAction(saveFile)"><span>Save</span><span class="menu-shortcut">Ctrl/Cmd+S</span></button>
       <button onclick="menuAction(saveAs)"><span>Save As…</span><span class="menu-shortcut">Ctrl/Cmd+Shift+S</span></button>
       <button onclick="menuAction(() => downloadFile('csv'))"><span>Download CSV</span><span class="menu-shortcut">Ctrl/Cmd+Shift+C</span></button>
+      <button onclick="menuAction(() => downloadFile('json'))"><span>Download JSON</span><span class="menu-shortcut">Ctrl/Cmd+Shift+J</span></button>
       <button onclick="menuAction(() => downloadFile('xlsx'))"><span>Download XLSX</span><span class="menu-shortcut">Ctrl/Cmd+Shift+X</span></button>
     </div>
   </div>
@@ -1535,6 +1536,7 @@ function onKeyDown(e) {
   if ((e.metaKey || e.ctrlKey) && e.key === 'o') { e.preventDefault(); openFile(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelection(); return; }
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); downloadFile('csv'); return; }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j') { e.preventDefault(); downloadFile('json'); return; }
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'x') { e.preventDefault(); downloadFile('xlsx'); return; }
   if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); addRow(); return; }
   if ((e.metaKey || e.ctrlKey) && e.altKey && e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); deleteSelectedRow(); return; }
@@ -1857,11 +1859,13 @@ function clearSearch() {
 function openFile() {
   const inp = document.createElement('input');
   inp.type = 'file';
-  inp.accept = '.csv,.tsv,.txt,.xlsx';
+  inp.accept = '.csv,.tsv,.txt,.xlsx,.json';
   inp.onchange = async e => {
     const file = e.target.files[0];
     if (!file) return;
-    const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+    const lowerName = file.name.toLowerCase();
+    const isXlsx = lowerName.endsWith('.xlsx');
+    const isJson = lowerName.endsWith('.json');
     let body;
     let sheets;  // declared here so it's accessible in the if (json.ok) block below
     if (isXlsx) {
@@ -1889,6 +1893,11 @@ function openFile() {
         filename: file.name,
         format: 'xlsx'
       });
+    } else if (isJson) {
+      _xlsxOrigBuf = null;
+      _xlsxWb = null;
+      const content = await file.text();
+      body = JSON.stringify({ content, filename: file.name, format: 'json' });
     } else {
       _xlsxOrigBuf = null;
       _xlsxWb = null;
@@ -2008,7 +2017,7 @@ async function saveAs() {
 async function downloadFile(fmt) {
   await syncNow();
   fmt = fmt || S.filetype || 'csv';
-  const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx)$/i, '');
+  const base = (S.filepath ? S.filepath.split(/[\\/]/).pop() : 'data').replace(/\.(csv|xlsx|json)$/i, '');
   if (fmt === 'xlsx') {
     try {
       const buf  = await _buildXlsxBytes();
@@ -2021,14 +2030,14 @@ async function downloadFile(fmt) {
     const res = await fetch('/api/export', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ format: 'csv' })
+      body: JSON.stringify({ format: fmt })
     });
     if (!res.ok) { alert('Export failed'); return; }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href = url;
-    a.download = base + '.csv';
+    a.download = base + '.' + fmt;
     a.click();
     URL.revokeObjectURL(url);
   }
