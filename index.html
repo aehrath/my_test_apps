@@ -448,6 +448,7 @@
   <button onclick="renameColumn()">Rename Col</button>
   <div class="sep"></div>
   <button onclick="autoResize()" title="Fit each column to its widest content">⇔ Auto Resize</button>
+  <button onclick="clearSheetColors()" title="Remove fill and text colors on the current sheet">Clear Colors</button>
   <button onclick="zoomOut()" title="Zoom out">− Zoom</button>
   <button onclick="zoomIn()" title="Zoom in">+ Zoom</button>
   <span id="zoom-display" style="font-size:11px;color:#aac;min-width:44px;text-align:center">100%</span>
@@ -1266,6 +1267,23 @@ function deleteColumnStyles(colIndexes) {
   if (_cellStyles?.rowStyles) {
     _cellStyles.rowStyles.forEach(row => colIndexes.forEach(c => row.splice(c, 1)));
   }
+}
+
+function stripColorStyle(st) {
+  if (!st) return st;
+  const next = { ...st };
+  delete next.bg;
+  delete next.color;
+  return Object.keys(next).length ? next : null;
+}
+
+function clearSheetColors() {
+  if (!_cellStyles) return;
+  if (!confirm('Clear fill and text colors on the current sheet?')) return;
+  if (_cellStyles.headerStyles) _cellStyles.headerStyles = _cellStyles.headerStyles.map(stripColorStyle);
+  if (_cellStyles.rowStyles) _cellStyles.rowStyles = _cellStyles.rowStyles.map(row => (row || []).map(stripColorStyle));
+  markModified();
+  render();
 }
 
 function addRow() {
