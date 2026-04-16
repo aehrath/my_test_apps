@@ -91,6 +91,14 @@
   }
   #search-input::placeholder { color: #8aa; }
   #search-input:focus { outline: none; background: #46607a; }
+  .search-toggle {
+    min-width: 34px;
+    padding: 4px 8px !important;
+  }
+  .search-toggle.active {
+    background: #6b8fb3 !important;
+    border-color: #86a6c5 !important;
+  }
 
   #filepath-display {
     font-size: 11px;
@@ -484,6 +492,8 @@
   <span id="zoom-display" style="font-size:11px;color:#aac;min-width:44px;text-align:center">100%</span>
   <div class="sep"></div>
   <input id="search-input" type="text" placeholder="🔍 Search…" oninput="applySearch(this.value)">
+  <button id="search-case-btn" class="search-toggle" onclick="toggleSearchCase()" title="Case sensitive on/off">Aa</button>
+  <button id="search-word-btn" class="search-toggle" onclick="toggleSearchWholeWord()" title="Whole word on/off">W</button>
   <button onclick="clearSearch()">✕</button>
   <span id="filepath-display">Untitled</span>
   <div class="sep"></div>
@@ -678,6 +688,8 @@ let sortCol = -1;
 let sortAsc = true;
 let searchTerm = '';
 let highlightCells = new Set(); // "r,c"
+let searchCaseSensitive = false;
+let searchWholeWord = false;
 let _zoomPercent = 100;
 
 function toggleFileMenu(e) {
@@ -704,6 +716,11 @@ function closeMenus() {
 function menuAction(fn) {
   closeMenus();
   fn();
+}
+
+function updateSearchButtons() {
+  document.getElementById('search-case-btn')?.classList.toggle('active', searchCaseSensitive);
+  document.getElementById('search-word-btn')?.classList.toggle('active', searchWholeWord);
 }
 
 function toXlsxCellValue(val) {
@@ -925,6 +942,7 @@ async function parseXlsxBuffer(buf) {
   S = await res.json();
   setBaseline(S.headers, S.rows);
   applyZoom();
+  updateSearchButtons();
   render();
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('click', closeMenus);
@@ -1780,13 +1798,28 @@ function sortBy(col) {
 }
 
 // ── Search ─────────────────────────────────────────────────────────────────
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function searchMatches(value, term) {
+  const hay = String(value || '');
+  if (!term) return false;
+  if (searchWholeWord) {
+    const flags = searchCaseSensitive ? '' : 'i';
+    return new RegExp(`\\b${escapeRegex(term)}\\b`, flags).test(hay);
+  }
+  if (searchCaseSensitive) return hay.includes(term);
+  return hay.toLowerCase().includes(term.toLowerCase());
+}
+
 function applySearch(term) {
-  searchTerm = term.toLowerCase();
+  searchTerm = term;
   highlightCells.clear();
   if (searchTerm) {
     S.rows.forEach((row, r) => {
       row.forEach((val, c) => {
-        if ((val || '').toLowerCase().includes(searchTerm)) highlightCells.add(`${r},${c}`);
+        if (searchMatches(val, searchTerm)) highlightCells.add(`${r},${c}`);
       });
     });
   }
@@ -1794,7 +1827,25 @@ function applySearch(term) {
   const count = highlightCells.size;
   const parts = [];
   if (searchTerm) parts.push(`${count} match${count !== 1 ? 'es' : ''}`);
+  if (searchCaseSensitive) parts.push('case');
+  if (searchWholeWord) parts.push('word');
   document.getElementById('status-right').textContent = parts.join(' · ');
+}
+
+function rerunSearch() {
+  applySearch(document.getElementById('search-input')?.value || '');
+}
+
+function toggleSearchCase() {
+  searchCaseSensitive = !searchCaseSensitive;
+  updateSearchButtons();
+  rerunSearch();
+}
+
+function toggleSearchWholeWord() {
+  searchWholeWord = !searchWholeWord;
+  updateSearchButtons();
+  rerunSearch();
 }
 
 function clearSearch() {
