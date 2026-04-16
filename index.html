@@ -1225,6 +1225,8 @@ function renderHeaders() {
       excelTh.dataset.colStart = String(i);
       excelTh.dataset.colSpan = '1';
       if (selectedCols.has(i)) excelTh.classList.add('selected-col');
+      excelTh.title = 'Click to select column • Shift/Cmd+click to multi-select';
+      excelTh.onclick = (e) => { selectCol(i, e); };
       excelTr.appendChild(excelTh);
     }
 
@@ -1422,24 +1424,32 @@ function _applyRange(set, anchor, target, max) {
 }
 
 function selectRow(r, e) {
+  const allCols = new Set(Array.from({ length: S.headers.length }, (_, i) => i));
   if (e && e.shiftKey && anchorRow >= 0) {
     _applyRange(selectedRows, anchorRow, r, S.rows.length - 1);
+    selectedCols = allCols;
   } else if (e && (e.metaKey || e.ctrlKey)) {
     if (selectedRows.has(r)) selectedRows.delete(r); else { selectedRows.add(r); anchorRow = r; }
+    selectedCols = selectedRows.size ? allCols : new Set();
   } else {
     selectedRows = new Set([r]);
+    selectedCols = allCols;
     anchorRow = r;
   }
   updateSelectionUI();
 }
 
 function selectCol(c, e) {
+  const allRows = new Set(Array.from({ length: S.rows.length }, (_, i) => i));
   if (e && e.shiftKey && anchorCol >= 0) {
     _applyRange(selectedCols, anchorCol, c, S.headers.length - 1);
+    selectedRows = allRows;
   } else if (e && (e.metaKey || e.ctrlKey)) {
     if (selectedCols.has(c)) selectedCols.delete(c); else { selectedCols.add(c); anchorCol = c; }
+    selectedRows = selectedCols.size ? allRows : new Set();
   } else {
     selectedCols = new Set([c]);
+    selectedRows = allRows;
     anchorCol = c;
   }
   updateSelectionUI();
