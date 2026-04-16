@@ -463,16 +463,22 @@
     </div>
   </div>
   <div class="sep"></div>
-  <button onclick="addRow()">+ Row</button>
-  <button onclick="deleteSelectedRow()">− Row</button>
-  <button onclick="addColumn()">+ Col</button>
-  <button onclick="deleteColumn()">− Col</button>
-  <button onclick="renameColumn()">Rename Col</button>
-  <button onclick="mergeSelection()" title="Merge selected cells on the current sheet">Merge</button>
-  <button onclick="unmergeSelection()" title="Unmerge selected cells on the current sheet">Unmerge</button>
+  <div class="toolbar-menu" id="edit-menu">
+    <button onclick="toggleEditMenu(event)">Edit ▾</button>
+    <div class="toolbar-menu-panel">
+      <button onclick="menuAction(addRow)"><span>Add Row</span><span class="menu-shortcut">Ctrl/Cmd+Alt+R</span></button>
+      <button onclick="menuAction(deleteSelectedRow)"><span>Delete Row</span><span class="menu-shortcut">Ctrl/Cmd+Alt+Shift+R</span></button>
+      <button onclick="menuAction(addColumn)"><span>Add Column</span><span class="menu-shortcut">Ctrl/Cmd+Alt+C</span></button>
+      <button onclick="menuAction(deleteColumn)"><span>Delete Column</span><span class="menu-shortcut">Ctrl/Cmd+Alt+Shift+C</span></button>
+      <button onclick="menuAction(renameColumn)"><span>Rename Column</span><span class="menu-shortcut">F2</span></button>
+      <button onclick="menuAction(duplicateSelection)"><span>Duplicate Selection</span><span class="menu-shortcut">Ctrl/Cmd+D</span></button>
+      <button onclick="menuAction(mergeSelection)"><span>Merge Cells</span><span class="menu-shortcut">Ctrl/Cmd+Alt+M</span></button>
+      <button onclick="menuAction(unmergeSelection)"><span>Unmerge Cells</span><span class="menu-shortcut">Ctrl/Cmd+Alt+Shift+M</span></button>
+      <button onclick="menuAction(autoResize)"><span>Auto Resize</span><span class="menu-shortcut">Ctrl/Cmd+Alt+A</span></button>
+      <button onclick="menuAction(clearSheetColors)"><span>Clear Colors</span><span class="menu-shortcut">Ctrl/Cmd+Alt+L</span></button>
+    </div>
+  </div>
   <div class="sep"></div>
-  <button onclick="autoResize()" title="Fit each column to its widest content">⇔ Auto Resize</button>
-  <button onclick="clearSheetColors()" title="Remove fill and text colors on the current sheet">Clear Colors</button>
   <button onclick="zoomOut()" title="Zoom out">− Zoom</button>
   <button onclick="zoomIn()" title="Zoom in">+ Zoom</button>
   <span id="zoom-display" style="font-size:11px;color:#aac;min-width:44px;text-align:center">100%</span>
@@ -676,15 +682,27 @@ let _zoomPercent = 100;
 
 function toggleFileMenu(e) {
   e?.stopPropagation();
-  document.getElementById('file-menu')?.classList.toggle('open');
+  toggleToolbarMenu('file-menu');
 }
 
-function closeFileMenu() {
-  document.getElementById('file-menu')?.classList.remove('open');
+function toggleEditMenu(e) {
+  e?.stopPropagation();
+  toggleToolbarMenu('edit-menu');
+}
+
+function toggleToolbarMenu(id) {
+  const el = document.getElementById(id);
+  const willOpen = !el?.classList.contains('open');
+  closeMenus();
+  if (willOpen) el?.classList.add('open');
+}
+
+function closeMenus() {
+  document.querySelectorAll('.toolbar-menu.open').forEach(el => el.classList.remove('open'));
 }
 
 function menuAction(fn) {
-  closeFileMenu();
+  closeMenus();
   fn();
 }
 
@@ -909,7 +927,7 @@ async function parseXlsxBuffer(buf) {
   applyZoom();
   render();
   document.addEventListener('keydown', onKeyDown);
-  document.addEventListener('click', closeFileMenu);
+  document.addEventListener('click', closeMenus);
 })();
 
 // ── Rendering ──────────────────────────────────────────────────────────────
@@ -1021,10 +1039,14 @@ function colSelectionOverlaps(start, span = 1) {
 }
 
 function shiftBodyMergesForRowInsert(insertAt) {
+  shiftBodyMergesForRowInsertCount(insertAt, 1);
+}
+
+function shiftBodyMergesForRowInsertCount(insertAt, count) {
   _sheetMerges = normalizedSheetMerges().map(m => {
     if (m.area !== 'body') return m;
-    if (m.row >= insertAt) return { ...m, row: m.row + 1 };
-    if (insertAt > m.row && insertAt < m.row + m.rowspan) return { ...m, rowspan: m.rowspan + 1 };
+    if (m.row >= insertAt) return { ...m, row: m.row + count };
+    if (insertAt > m.row && insertAt < m.row + m.rowspan) return { ...m, rowspan: m.rowspan + count };
     return m;
   });
 }
@@ -1044,9 +1066,13 @@ function shiftBodyMergesForRowDelete(rowIndexes) {
 }
 
 function shiftMergesForColumnInsert(insertAt) {
+  shiftMergesForColumnInsertCount(insertAt, 1);
+}
+
+function shiftMergesForColumnInsertCount(insertAt, count) {
   _sheetMerges = normalizedSheetMerges().map(m => {
-    if (m.col >= insertAt) return { ...m, col: m.col + 1 };
-    if (insertAt > m.col && insertAt < m.col + m.colspan) return { ...m, colspan: m.colspan + 1 };
+    if (m.col >= insertAt) return { ...m, col: m.col + count };
+    if (insertAt > m.col && insertAt < m.col + m.colspan) return { ...m, colspan: m.colspan + count };
     return m;
   });
 }
@@ -1478,11 +1504,21 @@ function onKeyDown(e) {
     e.shiftKey ? saveAs() : saveFile();
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && e.key === 'o') { e.preventDefault(); openFile(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'o') { e.preventDefault(); openFile(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelection(); return; }
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); downloadFile('csv'); return; }
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'x') { e.preventDefault(); downloadFile('xlsx'); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); addRow(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); deleteSelectedRow(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); addColumn(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); deleteColumn(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key.toLowerCase() === 'm') { e.preventDefault(); mergeSelection(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && e.shiftKey && e.key.toLowerCase() === 'm') { e.preventDefault(); unmergeSelection(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && e.key.toLowerCase() === 'a') { e.preventDefault(); autoResize(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && e.key.toLowerCase() === 'l') { e.preventDefault(); clearSheetColors(); return; }
+  if (e.key === 'F2') { e.preventDefault(); renameColumn(); return; }
   if (e.key === 'Escape' && _inlineDiff) { e.preventDefault(); clearInlineDiff(); }
-  if (e.key === 'Escape') closeFileMenu();
+  if (e.key === 'Escape') closeMenus();
 }
 
 function focusCell(r, c) {
@@ -1525,11 +1561,108 @@ function stripColorStyle(st) {
   return Object.keys(next).length ? next : null;
 }
 
+function cloneStyleCell(st) {
+  return st ? { ...st } : null;
+}
+
+function cloneStyleRow(row) {
+  return (row || []).map(cloneStyleCell);
+}
+
+function cloneMerge(m) {
+  return m ? { ...m } : null;
+}
+
 function clearSheetColors() {
   if (!_cellStyles) return;
   if (!confirm('Clear fill and text colors on the current sheet?')) return;
   if (_cellStyles.headerStyles) _cellStyles.headerStyles = _cellStyles.headerStyles.map(stripColorStyle);
   if (_cellStyles.rowStyles) _cellStyles.rowStyles = _cellStyles.rowStyles.map(row => (row || []).map(stripColorStyle));
+  markModified();
+  render();
+}
+
+function duplicateSelection() {
+  const rows = [...selectedRows].sort((a, b) => a - b);
+  const cols = [...selectedCols].sort((a, b) => a - b);
+  if (!rows.length && !cols.length) return;
+
+  if (rows.length && !cols.length) {
+    const insertAt = rows[rows.length - 1] + 1;
+    const rowCopies = rows.map(r => [...S.rows[r]]);
+    rowCopies.forEach((row, idx) => S.rows.splice(insertAt + idx, 0, row));
+    baseline.rows.splice(insertAt, 0, ...rowCopies.map(() => null));
+    if (_cellStyles?.rowStyles) {
+      const styleCopies = rows.map(r => cloneStyleRow(_cellStyles.rowStyles[r]));
+      _cellStyles.rowStyles.splice(insertAt, 0, ...styleCopies);
+    }
+    shiftBodyMergesForRowInsertCount(insertAt, rowCopies.length);
+    const rowSet = new Set(rows);
+    const mergeCopies = normalizedSheetMerges()
+      .filter(m => m.area === 'body' && rowSet.has(m.row) && rowSet.has(m.row + m.rowspan - 1))
+      .map(m => ({ ...cloneMerge(m), row: m.row + rowCopies.length }));
+    _sheetMerges.push(...mergeCopies);
+    selectedRows = new Set(rowCopies.map((_, i) => insertAt + i));
+    anchorRow = insertAt;
+    markModified();
+    render();
+    return;
+  }
+
+  if (!rows.length && cols.length) {
+    const insertAt = cols[cols.length - 1] + 1;
+    const headerCopies = cols.map(c => S.headers[c]);
+    S.headers.splice(insertAt, 0, ...headerCopies);
+    S.rows.forEach(row => {
+      const vals = cols.map(c => row[c] ?? '');
+      row.splice(insertAt, 0, ...vals);
+    });
+    if (_cellStyles?.headerStyles) {
+      const styleCopies = cols.map(c => cloneStyleCell(_cellStyles.headerStyles[c]));
+      _cellStyles.headerStyles.splice(insertAt, 0, ...styleCopies);
+    }
+    if (_cellStyles?.rowStyles) {
+      _cellStyles.rowStyles.forEach((rowStyle, r) => {
+        const styleCopies = cols.map(c => cloneStyleCell(rowStyle[c]));
+        rowStyle.splice(insertAt, 0, ...styleCopies);
+      });
+    }
+    shiftMergesForColumnInsertCount(insertAt, headerCopies.length);
+    const colSet = new Set(cols);
+    const mergeCopies = normalizedSheetMerges()
+      .filter(m => colSet.has(m.col) && colSet.has(m.col + m.colspan - 1))
+      .map(m => ({ ...cloneMerge(m), col: m.col + headerCopies.length }));
+    _sheetMerges.push(...mergeCopies);
+    selectedCols = new Set(headerCopies.map((_, i) => insertAt + i));
+    anchorCol = insertAt;
+    markModified();
+    render();
+    return;
+  }
+
+  const insertAt = rows[rows.length - 1] + 1;
+  const rowCount = rows.length;
+  const colSet = new Set(cols);
+  const rowBlock = rows.map(r => Array(S.headers.length).fill('').map((_, c) => (colSet.has(c) ? (S.rows[r][c] ?? '') : '')));
+  rowBlock.forEach((row, idx) => S.rows.splice(insertAt + idx, 0, row));
+  baseline.rows.splice(insertAt, 0, ...rowBlock.map(() => null));
+  const newStyleRows = rowBlock.map(() => Array(S.headers.length).fill(null));
+  if (_cellStyles?.rowStyles) {
+    rows.forEach((r, idx) => {
+      cols.forEach(c => {
+        newStyleRows[idx][c] = cloneStyleCell(_cellStyles.rowStyles[r]?.[c]);
+      });
+    });
+    _cellStyles.rowStyles.splice(insertAt, 0, ...newStyleRows);
+  }
+  shiftBodyMergesForRowInsertCount(insertAt, rowCount);
+  const rowSet = new Set(rows);
+  const mergeCopies = normalizedSheetMerges()
+    .filter(m => m.area === 'body' && rowSet.has(m.row) && rowSet.has(m.row + m.rowspan - 1) && colSet.has(m.col) && colSet.has(m.col + m.colspan - 1))
+    .map(m => ({ ...cloneMerge(m), row: m.row + rowCount }));
+  _sheetMerges.push(...mergeCopies);
+  selectedRows = new Set(rowBlock.map((_, i) => insertAt + i));
+  anchorRow = insertAt;
   markModified();
   render();
 }
