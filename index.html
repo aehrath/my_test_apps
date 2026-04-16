@@ -907,18 +907,15 @@ function renderSheetImages() {
 
   const topBar = document.getElementById('excel-col-row');
   const headerRow = document.getElementById('header-row');
+  const table = document.getElementById('csv-table');
   const rowHeight = Math.round(28 * (_zoomPercent / 100));
   const topBarHeight = topBar && !topBar.classList.contains('hidden-row') ? topBar.getBoundingClientRect().height : 0;
   const headerHeight = headerRow && !headerRow.classList.contains('header-sizer-row') ? headerRow.getBoundingClientRect().height : 0;
   const headerOffset = topBarHeight + headerHeight;
-
-  const colLefts = [];
-  let left = Math.round(42 * (_zoomPercent / 100));
+  const tableLeft = table ? table.getBoundingClientRect().left : 0;
   const ths = [...document.querySelectorAll('#header-row th')].slice(1);
-  ths.forEach((th, idx) => {
-    colLefts[idx] = left;
-    left += th.getBoundingClientRect().width || 0;
-  });
+  const colLefts = ths.map(th => (th.getBoundingClientRect().left - tableLeft));
+  const fallbackLeft = Math.round(42 * (_zoomPercent / 100));
 
   _sheetImages.forEach((img, idx) => {
     const el = document.createElement('img');
@@ -927,8 +924,10 @@ function renderSheetImages() {
     el.alt = img.alt || `Sheet image ${idx + 1}`;
     const col = Math.max(0, img.col || 0);
     const row = Math.max(0, img.row || 0);
-    el.style.left = `${colLefts[col] ?? left}px`;
-    el.style.top = `${headerOffset + row * rowHeight}px`;
+    const xInset = Math.max(4, Math.round(8 * (_zoomPercent / 100)));
+    const yInset = Math.max(2, Math.round(4 * (_zoomPercent / 100)));
+    el.style.left = `${(colLefts[col] ?? fallbackLeft) + xInset}px`;
+    el.style.top = `${headerOffset + row * rowHeight + yInset}px`;
     el.style.maxWidth = `${Math.round(180 * (_zoomPercent / 100))}px`;
     el.style.maxHeight = `${Math.round(72 * (_zoomPercent / 100))}px`;
     layer.appendChild(el);
