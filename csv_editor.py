@@ -171,6 +171,69 @@ def _excel_col_name(idx):
     return name
 
 
+def _row_to_visible_area(row_idx, header_idx):
+    if header_idx < 0:
+        return ('body', row_idx)
+    if row_idx == header_idx:
+        return ('header', 0)
+    body_idx = row_idx
+    if row_idx > header_idx:
+        body_idx -= 1
+    return ('body', body_idx)
+
+
+def _parse_sheet_merges(ws, header_idx):
+    merges = []
+    for merged in ws.merged_cells.ranges:
+        min_row = merged.min_row - 1
+        max_row = merged.max_row - 1
+        start_area, start_visible_row = _row_to_visible_area(min_row, header_idx)
+        end_area, end_visible_row = _row_to_visible_area(max_row, header_idx)
+        if not start_area or start_area != end_area:
+            continue
+        if start_area == 'header':
+            if merged.min_row != merged.max_row:
+                continue
+            merges.append({
+                'area': 'header',
+                'row': 0,
+                'col': merged.min_col - 1,
+                'rowspan': 1,
+                'colspan': merged.max_col - merged.min_col + 1,
+            })
+            continue
+        merges.append({
+            'area': 'body',
+            'row': start_visible_row,
+            'col': merged.min_col - 1,
+            'rowspan': end_visible_row - start_visible_row + 1,
+            'colspan': merged.max_col - merged.min_col + 1,
+        })
+    return merges
+
+
+def _merge_ref_for_sheet(sheet, merge):
+    area = merge.get('area', 'body')
+    row = int(merge.get('row', 0) or 0)
+    col = int(merge.get('col', 0) or 0)
+    rowspan = max(1, int(merge.get('rowspan', 1) or 1))
+    colspan = max(1, int(merge.get('colspan', 1) or 1))
+    header_idx_raw = sheet.get('headerRowIndex', 0)
+    header_idx = int(header_idx_raw) if header_idx_raw not in (None, '') else 0
+    promoted_header = header_idx >= 0
+    if area == 'header' and promoted_header:
+        start_row = header_idx + 1
+    else:
+        if not promoted_header:
+            start_row = row + 1
+        else:
+            start_row = row + 1 if row < header_idx else row + 2
+    end_row = start_row + rowspan - 1
+    start_col = col + 1
+    end_col = start_col + colspan - 1
+    return f'{_excel_col_name(start_col - 1)}{start_row}:{_excel_col_name(end_col - 1)}{end_row}'
+
+
 def _parse_xlsx_sheets_with_styles(raw_bytes):
     if not _XLSX_OK:
         raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
@@ -223,25 +286,23 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
                 header_idx = 0
         else:
             header_idx = 0
-        headers = rows2d[header_idx] if rows2d else []
-        header_styles = styles2d[header_idx] if styles2d else []
-        leading_rows = rows2d[:header_idx]
-        trailing_rows = rows2d[header_idx + 1:] if len(rows2d) > header_idx + 1 else []
-        leading_styles = styles2d[:header_idx]
-        trailing_styles = styles2d[header_idx + 1:] if len(styles2d) > header_idx + 1 else []
-        rows = leading_rows + trailing_rows
-        row_styles = leading_styles + trailing_styles
-        title_text = ''
-        title_row_idx = None
-        title_col_idx = None
-        for idx, row in enumerate(leading_rows):
-            nonempty = [(i, v) for i, v in enumerate(row) if v != '']
-            if len(nonempty) == 1 and len(nonempty[0][1]) > len(title_text):
-                title_col_idx, title_text = nonempty[0]
-                title_row_idx = idx
-        if title_row_idx is not None:
-            leading_rows = [r for i, r in enumerate(leading_rows) if i != title_row_idx]
-            leading_styles = [r for i, r in enumerate(leading_styles) if i != title_row_idx]
+        has_preamble = header_idx > 0
+        if has_preamble:
+            headers = [_excel_col_name(i) for i in range(max_col)]
+            header_styles = []
+            leading_rows = rows2d
+            trailing_rows = []
+            leading_styles = styles2d
+            trailing_styles = []
+            header_idx_out = -1
+        else:
+            headers = rows2d[header_idx] if rows2d else []
+            header_styles = styles2d[header_idx] if styles2d else []
+            leading_rows = rows2d[:header_idx]
+            trailing_rows = rows2d[header_idx + 1:] if len(rows2d) > header_idx + 1 else []
+            leading_styles = styles2d[:header_idx]
+            trailing_styles = styles2d[header_idx + 1:] if len(styles2d) > header_idx + 1 else []
+            header_idx_out = header_idx
         sheets.append({
             'name': ws.title,
             'headers': headers,
@@ -249,16 +310,16 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             'headerStyles': header_styles,
             'rowStyles': leading_styles + trailing_styles,
             'images': image_map.get(ws.title, []),
-            'headerRowIndex': header_idx,
-            'titleText': title_text,
-            'titleCol': title_col_idx,
-            'titleSpan': 3 if title_text else 0,
+            'headerRowIndex': header_idx_out,
+            'merges': _parse_sheet_merges(ws, header_idx_out),
         })
     return sheets
 
 
 def _ordered_sheet_rows(sheet):
     header_idx = int(sheet.get('headerRowIndex', 0) or 0)
+    if header_idx < 0:
+        return [list(r) for r in sheet.get('rows', [])]
     rows = list(sheet.get('rows', []))
     header = list(sheet.get('headers', []))
     leading = rows[:header_idx]
@@ -375,6 +436,23 @@ def _write_xlsx_from_template(raw_bytes, sheets):
                         dim = root.find('a:dimension', ns)
                         if dim is not None and max_row and max_col:
                             dim.set('ref', f'A1:{_excel_col_name(max_col - 1)}{max_row}')
+                        merge_cells = root.find('a:mergeCells', ns)
+                        if merge_cells is not None:
+                            root.remove(merge_cells)
+                        merge_refs = []
+                        for merge in sheet.get('merges', []) or []:
+                            try:
+                                merge_refs.append(_merge_ref_for_sheet(sheet, merge))
+                            except Exception:
+                                continue
+                        if merge_refs:
+                            merge_cells = _ET.Element(f'{{{ns["a"]}}}mergeCells')
+                            merge_cells.set('count', str(len(merge_refs)))
+                            for ref in merge_refs:
+                                merge_el = _ET.SubElement(merge_cells, f'{{{ns["a"]}}}mergeCell')
+                                merge_el.set('ref', ref)
+                            insert_idx = list(root).index(sheet_data) + 1
+                            root.insert(insert_idx, merge_cells)
                         data = _ET.tostring(root, encoding='utf-8', xml_declaration=True)
             dst.writestr(name, data)
     return zout.getvalue()
@@ -747,9 +825,7 @@ class Handler(BaseHTTPRequestHandler):
             state.headers = data.get('headers', state.headers)
             state.rows    = data.get('rows',    state.rows)
             active = state.sheets[state.active_sheet]
-            active['titleText'] = data.get('titleText', active.get('titleText', ''))
-            active['titleCol'] = data.get('titleCol', active.get('titleCol', 3))
-            active['titleSpan'] = data.get('titleSpan', active.get('titleSpan', 3))
+            active['merges'] = data.get('merges', active.get('merges', []))
             self._json({'ok': True})
 
         elif self.path == '/api/save':

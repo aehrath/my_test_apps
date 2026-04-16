@@ -77,62 +77,6 @@
     border-radius: 6px;
     box-shadow: 0 1px 4px rgba(0,0,0,.15);
   }
-  #excel-col-bar {
-    position: sticky;
-    top: 0;
-    z-index: 4;
-    background: #fff;
-  }
-
-  #sheet-banner {
-    display: none;
-    grid-template-columns: repeat(9, minmax(calc(80px * var(--sheet-zoom)), 1fr));
-    gap: 0;
-    padding: calc(12px * var(--sheet-zoom)) calc(14px * var(--sheet-zoom)) 0;
-    background: #fff;
-    align-items: stretch;
-  }
-  #sheet-banner.has-content { display: grid; }
-  .sheet-banner-logo {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: calc(74px * var(--sheet-zoom));
-    border: 1px solid #dde;
-    background: #fff;
-  }
-  .sheet-banner-logo img {
-    max-height: calc(64px * var(--sheet-zoom));
-    width: auto;
-    object-fit: contain;
-  }
-  .sheet-banner-title {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: calc(74px * var(--sheet-zoom));
-    border: 1px solid #dde;
-    background: #fff;
-    font: 700 calc(18px * var(--sheet-zoom))/1.25 Arial, sans-serif;
-    color: #2c3e50;
-    text-align: center;
-    padding: calc(8px * var(--sheet-zoom)) calc(12px * var(--sheet-zoom));
-  }
-  .sheet-banner-title input {
-    width: 100%;
-    border: none;
-    background: transparent;
-    font: inherit;
-    color: inherit;
-    text-align: inherit;
-    outline: none;
-  }
-  .sheet-banner-title input:focus {
-    background: #f4f8ff;
-    box-shadow: inset 0 0 0 2px #4a90d9;
-    border-radius: 4px;
-  }
-
   table {
     border-collapse: collapse;
     width: max-content;
@@ -143,7 +87,7 @@
   /* Header */
   thead th {
     position: sticky;
-    top: calc(32px * var(--sheet-zoom));
+    top: 0;
     z-index: 2;
     background: #dce8f7;
     border: 1px solid #b8cfe8;
@@ -159,17 +103,6 @@
   }
   thead th:hover { background: #c8d8ee; }
   thead th.row-num { min-width: calc(42px * var(--sheet-zoom)); width: calc(42px * var(--sheet-zoom)); cursor: default; text-align: center; }
-  #excel-col-row th {
-    position: sticky;
-    top: 0;
-    z-index: 3;
-    background: #eef3f9;
-    border-color: #cfd8e3;
-    text-align: center;
-    cursor: default;
-  }
-  #excel-col-row th:hover { background: #eef3f9; }
-  #excel-col-row th.row-num { background: #e5ebf3; }
 
   /* Rows */
   tbody tr.even { background: #fff; }
@@ -446,6 +379,8 @@
   <button onclick="addColumn()">+ Col</button>
   <button onclick="deleteColumn()">− Col</button>
   <button onclick="renameColumn()">Rename Col</button>
+  <button onclick="mergeSelection()" title="Merge selected cells on the current sheet">Merge</button>
+  <button onclick="unmergeSelection()" title="Unmerge selected cells on the current sheet">Unmerge</button>
   <div class="sep"></div>
   <button onclick="autoResize()" title="Fit each column to its widest content">⇔ Auto Resize</button>
   <button onclick="clearSheetColors()" title="Remove fill and text colors on the current sheet">Clear Colors</button>
@@ -467,10 +402,6 @@
 </div>
 
 <div id="table-wrap">
-  <table id="excel-col-bar">
-    <thead><tr id="excel-col-row"></tr></thead>
-  </table>
-  <div id="sheet-banner"></div>
   <table id="csv-table">
     <thead><tr id="header-row"></tr></thead>
     <tbody id="table-body"></tbody>
@@ -635,10 +566,7 @@ let _xlsxWb = null;          // ExcelJS workbook for style-preserving save
 let _xlsxOrigBuf = null;     // original ArrayBuffer — reload ExcelJS lazily if load failed
 let _cellStyles = null;      // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
 let _xlsxSheetOffsets = {};  // { sheetName: {rowOff, colOff} } — Excel row/col where sheet data starts (1-based)
-let _sheetImages = [];
-let _sheetTitle = '';
-let _sheetTitleCol = 3;
-let _sheetTitleSpan = 3;
+let _sheetMerges = [];
 let selectedRows = new Set();   // indices of selected rows
 let selectedCols = new Set();   // indices of selected columns
 let anchorRow = -1;             // shift-click anchor
@@ -706,11 +634,21 @@ function workbookMatchesSheets(buf, expectedSheets) {
 
 function splitSheetRows(rows2d, styles2d = []) {
   if (!rows2d.length) {
-    return { headers: [], rows: [], headerStyles: [], rowStyles: [] };
+    return { headers: [], rows: [], headerStyles: [], rowStyles: [], headerRowIndex: 0 };
   }
   const counts = rows2d.map(row => row.reduce((n, v) => n + (v !== '' ? 1 : 0), 0));
   let headerIdx = counts.reduce((best, count, idx) => count > counts[best] ? idx : best, 0);
   if (counts[headerIdx] === 0) headerIdx = 0;
+  if (headerIdx > 0) {
+    const cols = rows2d.reduce((n, row) => Math.max(n, row.length), 0);
+    return {
+      headers: Array.from({ length: cols }, (_, i) => excelColName(i)),
+      rows: rows2d,
+      headerStyles: [],
+      rowStyles: styles2d,
+      headerRowIndex: -1,
+    };
+  }
   const leadingRows = rows2d.slice(0, headerIdx);
   const trailingRows = rows2d.slice(headerIdx + 1);
   const leadingStyles = styles2d.slice(0, headerIdx);
@@ -720,6 +658,7 @@ function splitSheetRows(rows2d, styles2d = []) {
     rows: leadingRows.concat(trailingRows),
     headerStyles: styles2d[headerIdx] || [],
     rowStyles: leadingStyles.concat(trailingStyles),
+    headerRowIndex: headerIdx,
   };
 }
 
@@ -845,6 +784,7 @@ async function parseXlsxBuffer(buf) {
       rows: split.rows,
       headerStyles: split.headerStyles,
       rowStyles: split.rowStyles,
+      headerRowIndex: split.headerRowIndex,
     };
   });
 
@@ -863,7 +803,6 @@ async function parseXlsxBuffer(buf) {
 
 // ── Rendering ──────────────────────────────────────────────────────────────
 function render() {
-  renderSheetImages();
   renderHeaders();
   renderRows();
   updateStatus();
@@ -892,42 +831,138 @@ function zoomOut() {
   setZoom(_zoomPercent - 10);
 }
 
-function renderSheetImages() {
-  const box = document.getElementById('sheet-banner');
-  box.innerHTML = '';
-  if (!_sheetImages.length && !_sheetTitle) {
-    box.classList.remove('has-content');
-    return;
-  }
-  _sheetImages
-    .slice()
-    .sort((a, b) => (a.row - b.row) || (a.col - b.col))
-    .forEach((img, idx) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'sheet-banner-logo';
-      wrap.style.gridColumn = `${(img.col || 0) + 1} / span 2`;
-      const el = document.createElement('img');
-      el.src = img.src;
-      el.alt = img.alt || `Sheet image ${idx + 1}`;
-      wrap.appendChild(el);
-      box.appendChild(wrap);
+function normalizeMerge(m) {
+  if (!m) return null;
+  const area = m.area === 'header' ? 'header' : 'body';
+  const row = Math.max(0, +m.row || 0);
+  const col = Math.max(0, +m.col || 0);
+  const rowspan = Math.max(1, +m.rowspan || 1);
+  const colspan = Math.max(1, +m.colspan || 1);
+  return { area, row, col, rowspan, colspan };
+}
+
+function normalizedSheetMerges() {
+  return (_sheetMerges || []).map(normalizeMerge).filter(Boolean);
+}
+
+function mergeKey(area, row, col) {
+  return `${area}:${row}:${col}`;
+}
+
+function buildMergeMaps(area) {
+  const starts = new Map();
+  const covered = new Set();
+  normalizedSheetMerges()
+    .filter(m => m.area === area && m.rowspan > 0 && m.colspan > 0)
+    .forEach(m => {
+      starts.set(mergeKey(area, m.row, m.col), m);
+      for (let r = m.row; r < m.row + m.rowspan; r++) {
+        for (let c = m.col; c < m.col + m.colspan; c++) {
+          if (r === m.row && c === m.col) continue;
+          covered.add(mergeKey(area, r, c));
+        }
+      }
     });
-  if (_sheetTitle) {
-    const title = document.createElement('div');
-    title.className = 'sheet-banner-title';
-    title.style.gridColumn = `${(_sheetTitleCol || 0) + 1} / span ${_sheetTitleSpan || 3}`;
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = _sheetTitle;
-    input.setAttribute('aria-label', 'Sheet title');
-    input.addEventListener('input', () => {
-      _sheetTitle = input.value;
-      markModified();
-    });
-    title.appendChild(input);
-    box.appendChild(title);
+  return { starts, covered };
+}
+
+function colSelectionOverlaps(start, span = 1) {
+  for (let c = start; c < start + span; c++) {
+    if (selectedCols.has(c)) return true;
   }
-  box.classList.add('has-content');
+  return false;
+}
+
+function shiftBodyMergesForRowInsert(insertAt) {
+  _sheetMerges = normalizedSheetMerges().map(m => {
+    if (m.area !== 'body') return m;
+    if (m.row >= insertAt) return { ...m, row: m.row + 1 };
+    if (insertAt > m.row && insertAt < m.row + m.rowspan) return { ...m, rowspan: m.rowspan + 1 };
+    return m;
+  });
+}
+
+function shiftBodyMergesForRowDelete(rowIndexes) {
+  const del = [...rowIndexes].sort((a, b) => a - b);
+  _sheetMerges = normalizedSheetMerges().flatMap(m => {
+    if (m.area !== 'body') return [m];
+    let start = m.row;
+    let end = m.row + m.rowspan - 1;
+    del.forEach(r => {
+      if (r < start) { start -= 1; end -= 1; }
+      else if (r <= end) { end -= 1; }
+    });
+    return end >= start ? [{ ...m, row: start, rowspan: end - start + 1 }] : [];
+  });
+}
+
+function shiftMergesForColumnInsert(insertAt) {
+  _sheetMerges = normalizedSheetMerges().map(m => {
+    if (m.col >= insertAt) return { ...m, col: m.col + 1 };
+    if (insertAt > m.col && insertAt < m.col + m.colspan) return { ...m, colspan: m.colspan + 1 };
+    return m;
+  });
+}
+
+function shiftMergesForColumnDelete(colIndexes) {
+  const del = [...colIndexes].sort((a, b) => a - b);
+  _sheetMerges = normalizedSheetMerges().flatMap(m => {
+    let start = m.col;
+    let end = m.col + m.colspan - 1;
+    del.forEach(c => {
+      if (c < start) { start -= 1; end -= 1; }
+      else if (c <= end) { end -= 1; }
+    });
+    return end >= start ? [{ ...m, col: start, colspan: end - start + 1 }] : [];
+  });
+}
+
+function selectedRangeForMerge() {
+  if (selectedCols.size === 0) return null;
+  const cols = [...selectedCols].sort((a, b) => a - b);
+  const col = cols[0];
+  const colspan = cols[cols.length - 1] - col + 1;
+  if (selectedRows.size === 0) {
+    return colspan > 1 ? { area: 'header', row: 0, col, rowspan: 1, colspan } : null;
+  }
+  const rows = [...selectedRows].sort((a, b) => a - b);
+  const row = rows[0];
+  const rowspan = rows[rows.length - 1] - row + 1;
+  return rowspan > 1 || colspan > 1 ? { area: 'body', row, col, rowspan, colspan } : null;
+}
+
+function rangesOverlap(a, b) {
+  return a.area === b.area
+    && a.row < b.row + b.rowspan
+    && b.row < a.row + a.rowspan
+    && a.col < b.col + b.colspan
+    && b.col < a.col + a.colspan;
+}
+
+function mergeSelection() {
+  const merge = selectedRangeForMerge();
+  if (!merge) return;
+  _sheetMerges = normalizedSheetMerges().filter(m => !rangesOverlap(m, merge));
+  _sheetMerges.push(merge);
+  markModified();
+  render();
+}
+
+function unmergeSelection() {
+  const target = selectedRangeForMerge()
+    || (selectedCols.size ? {
+      area: selectedRows.size ? 'body' : 'header',
+      row: selectedRows.size ? Math.min(...selectedRows) : 0,
+      col: Math.min(...selectedCols),
+      rowspan: selectedRows.size ? (Math.max(...selectedRows) - Math.min(...selectedRows) + 1) : 1,
+      colspan: Math.max(...selectedCols) - Math.min(...selectedCols) + 1,
+    } : null);
+  if (!target) return;
+  const next = normalizedSheetMerges().filter(m => !rangesOverlap(m, target));
+  if (next.length === _sheetMerges.length) return;
+  _sheetMerges = next;
+  markModified();
+  render();
 }
 
 // ── Auto-resize columns to fit content ─────────────────────────────────────
@@ -936,6 +971,11 @@ function autoResize() {
   const PAD = 28, MIN = 60, MAX = 500;
   const scale = _zoomPercent / 100;
   const ths = document.querySelectorAll('#header-row th');
+  const rowNumWidth = Math.round(42 * scale) + 'px';
+  if (ths[0]) {
+    ths[0].style.width = rowNumWidth;
+    ths[0].style.minWidth = rowNumWidth;
+  }
 
   S.headers.forEach((header, c) => {
     _measureCtx.font = 'bold 13px Arial';
@@ -956,41 +996,34 @@ function autoResize() {
   });
 }
 
-function excelColName(idx) {
-  let name = '';
-  let n = idx + 1;
-  while (n > 0) {
-    const rem = (n - 1) % 26;
-    name = String.fromCharCode(65 + rem) + name;
-    n = Math.floor((n - 1) / 26);
-  }
-  return name;
-}
-
 function renderHeaders() {
-  const excelTr = document.getElementById('excel-col-row');
   const tr = document.getElementById('header-row');
-  excelTr.innerHTML = '';
+  const mergeMap = buildMergeMaps('header');
   tr.innerHTML = '';
-  excelTr.appendChild(th('', 'row-num'));
   const corner = th('#', 'row-num');
   tr.appendChild(corner);
 
   S.headers.forEach((h, i) => {
-    const excelTh = document.createElement('th');
-    excelTh.textContent = excelColName(i);
-    excelTh.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
-    if (selectedCols.has(i)) excelTh.classList.add('selected-col');
-    excelTr.appendChild(excelTh);
-
+    if (mergeMap.covered.has(mergeKey('header', 0, i))) return;
     const el = document.createElement('th');
+    const merge = mergeMap.starts.get(mergeKey('header', 0, i));
+    const span = merge?.colspan || 1;
     el.title = 'Click to sort/select • Shift/Cmd+click to multi-select • Double-click to rename';
     el.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
-    if (selectedCols.has(i)) el.classList.add('selected-col');
+    el.dataset.colStart = String(i);
+    el.dataset.colSpan = String(span);
+    if (span > 1) el.colSpan = span;
+    if (colSelectionOverlaps(i, span)) el.classList.add('selected-col');
     const arrow = sortCol === i ? (sortAsc ? ' ▲' : ' ▼') : '';
     el.textContent = h + arrow;
     el.onclick = (e) => {
-      selectCol(i, e);
+      if (span > 1 && !(e.shiftKey || e.metaKey || e.ctrlKey)) {
+        selectedCols = new Set(Array.from({ length: span }, (_, off) => i + off));
+        anchorCol = i;
+        updateSelectionUI();
+      } else {
+        selectCol(i, e);
+      }
       if (!e.shiftKey && !e.metaKey && !e.ctrlKey) sortBy(i);
     };
     el.ondblclick = (e) => { e.stopPropagation(); renameColumn(i); };
@@ -1027,6 +1060,7 @@ function applyExcelStyle(td, inp, st) {
 function renderRows() {
   const tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
+  const mergeMap = buildMergeMaps('body');
 
   // Index incoming (new-in-commit) rows by the current-row index they appear before
   const ghostBefore = {};
@@ -1070,10 +1104,18 @@ function renderRows() {
     tr.appendChild(rn);
 
     S.headers.forEach((h, c) => {
+      if (mergeMap.covered.has(mergeKey('body', r, c))) return;
       const td = document.createElement('td');
+      const merge = mergeMap.starts.get(mergeKey('body', r, c));
+      const rowSpan = merge?.rowspan || 1;
+      const colSpan = merge?.colspan || 1;
+      td.dataset.colStart = String(c);
+      td.dataset.colSpan = String(colSpan);
+      if (rowSpan > 1) td.rowSpan = rowSpan;
+      if (colSpan > 1) td.colSpan = colSpan;
       const key = `${r},${c}`;
       if (highlightCells.has(key)) td.classList.add('highlight');
-      if (selectedCols.has(c)) td.classList.add('selected-col');
+      if (colSelectionOverlaps(c, colSpan)) td.classList.add('selected-col');
 
       const inp = document.createElement('input');
       inp.type = 'text';
@@ -1193,12 +1235,10 @@ function updateSelectionUI() {
   // Rows
   document.querySelectorAll('#table-body tr').forEach((tr, i) =>
     tr.classList.toggle('selected-row', selectedRows.has(i)));
-  // Columns — clear then re-apply
-  document.querySelectorAll('.selected-col').forEach(el => el.classList.remove('selected-col'));
-  selectedCols.forEach(c => {
-    const nth = c + 2; // +1 for row-num col, +1 for 1-based nth-child
-    document.querySelectorAll(`#header-row th:nth-child(${nth}), #table-body td:nth-child(${nth})`)
-      .forEach(el => el.classList.add('selected-col'));
+  document.querySelectorAll('[data-col-start]').forEach(el => {
+    const start = +(el.dataset.colStart || 0);
+    const span = +(el.dataset.colSpan || 1);
+    el.classList.toggle('selected-col', colSelectionOverlaps(start, span));
   });
   updateStatus();
 }
@@ -1290,6 +1330,7 @@ function addRow() {
   const insertAt = selectedRows.size > 0 ? Math.max(...selectedRows) + 1 : S.rows.length;
   S.rows.splice(insertAt, 0, Array(S.headers.length).fill(''));
   insertNullRowStyles(insertAt);
+  shiftBodyMergesForRowInsert(insertAt);
   // Insert null into baseline so the new row shows as modified, while rows
   // below keep their correct baseline values and don't appear changed
   baseline.rows.splice(insertAt, 0, null);
@@ -1310,6 +1351,7 @@ function deleteSelectedRow() {
     baseline.rows.splice(r, 1);
   });
   deleteRowStyles(toDelete);
+  shiftBodyMergesForRowDelete(toDelete);
   const next = S.rows.length > 0 ? Math.min(Math.min(...toDelete), S.rows.length - 1) : -1;
   selectedRows = next >= 0 ? new Set([next]) : new Set(); anchorRow = next;
   markModified();
@@ -1325,6 +1367,7 @@ function addColumn() {
     S.headers.splice(insertAt, 0, name);
     S.rows.forEach(row => row.splice(insertAt, 0, ''));
     insertNullColumnStyles(insertAt);
+    shiftMergesForColumnInsert(insertAt);
     selectedCols = new Set([insertAt]); anchorCol = insertAt;
     markModified();
     render();
@@ -1341,6 +1384,7 @@ function deleteColumn() {
   if (!confirm(`Delete ${label}?`)) return;
   toDelete.forEach(c => { S.headers.splice(c, 1); S.rows.forEach(row => row.splice(c, 1)); });
   deleteColumnStyles(toDelete);
+  shiftMergesForColumnDelete(toDelete);
   const next = S.headers.length > 0 ? Math.min(Math.min(...toDelete), S.headers.length - 1) : -1;
   selectedCols = next >= 0 ? new Set([next]) : new Set(); anchorCol = next;
   markModified();
@@ -1360,6 +1404,10 @@ function renameColumn(idx) {
 }
 
 function sortBy(col) {
+  if (normalizedSheetMerges().some(m => m.area === 'body')) {
+    alert('Sorting is disabled while the current sheet has merged body cells.');
+    return;
+  }
   if (sortCol === col) sortAsc = !sortAsc;
   else { sortCol = col; sortAsc = true; }
   const sorted = S.rows.map((row, idx) => ({
@@ -1455,16 +1503,10 @@ function openFile() {
       S = await fetch('/api/data').then(r => r.json());
       if (isXlsx) {
         _cellStyles = { headerStyles: sheets[0].headerStyles || [], rowStyles: sheets[0].rowStyles || [] };
-        _sheetImages = sheets[0].images || [];
-        _sheetTitle = sheets[0].titleText || '';
-        _sheetTitleCol = sheets[0].titleCol ?? 3;
-        _sheetTitleSpan = sheets[0].titleSpan || 3;
+        _sheetMerges = sheets[0].merges || [];
       } else {
         _cellStyles = null;
-        _sheetImages = [];
-        _sheetTitle = '';
-        _sheetTitleCol = 3;
-        _sheetTitleSpan = 3;
+        _sheetMerges = [];
       }
       setBaseline(S.headers, S.rows);
       sortCol = -1; sortAsc = true;
@@ -1610,9 +1652,7 @@ async function syncNow() {
     body: JSON.stringify({
       headers: S.headers,
       rows: S.rows,
-      titleText: _sheetTitle,
-      titleCol: _sheetTitleCol,
-      titleSpan: _sheetTitleSpan,
+      merges: normalizedSheetMerges(),
     })
   });
 }
@@ -1926,10 +1966,7 @@ async function loadVersion(sha) {
       headerStyles: sheets[0]?.headerStyles || [],
       rowStyles: sheets[0]?.rowStyles || [],
     };
-    _sheetImages = sheets[0]?.images || [];
-    _sheetTitle = sheets[0]?.titleText || '';
-    _sheetTitleCol = sheets[0]?.titleCol ?? 3;
-    _sheetTitleSpan = sheets[0]?.titleSpan || 3;
+    _sheetMerges = sheets[0]?.merges || [];
     setBaseline(S.headers, S.rows);
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
     sortCol = -1; sortAsc = true;
@@ -1981,10 +2018,7 @@ async function loadVersion(sha) {
       headerStyles: sheets[0]?.headerStyles || [],
       rowStyles: sheets[0]?.rowStyles || [],
     };
-    _sheetImages = sheets[0]?.images || [];
-    _sheetTitle = sheets[0]?.titleText || '';
-    _sheetTitleCol = sheets[0]?.titleCol ?? 3;
-    _sheetTitleSpan = sheets[0]?.titleSpan || 3;
+    _sheetMerges = sheets[0]?.merges || [];
     setBaseline(S.headers, S.rows);
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
     sortCol = -1; sortAsc = true;
@@ -1997,10 +2031,7 @@ async function loadVersion(sha) {
   const { headers, rows } = _parseVersionData(data);
   S.headers = headers; S.rows = rows;
   _cellStyles = null;
-  _sheetImages = [];
-  _sheetTitle = '';
-  _sheetTitleCol = 3;
-  _sheetTitleSpan = 3;
+  _sheetMerges = [];
   setBaseline(headers, rows);
   selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
   sortCol = -1; sortAsc = true;
@@ -2262,10 +2293,7 @@ async function switchSheet(idx) {
   const allData = await fetch('/api/all-sheets').then(r => r.json());
   const activeSh = allData.sheets[idx];
   _cellStyles = activeSh ? { headerStyles: activeSh.headerStyles || [], rowStyles: activeSh.rowStyles || [] } : null;
-  _sheetImages = activeSh?.images || [];
-  _sheetTitle = activeSh?.titleText || '';
-  _sheetTitleCol = activeSh?.titleCol ?? 3;
-  _sheetTitleSpan = activeSh?.titleSpan || 3;
+  _sheetMerges = activeSh?.merges || [];
   setBaseline(S.headers, S.rows);
   resetSelection(); clearSearch();
   render();
