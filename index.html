@@ -185,6 +185,7 @@
     border: 1px solid #dde;
     padding: 0;
     height: calc(28px * var(--sheet-zoom));
+    font-size: calc(15px * var(--sheet-zoom));
   }
   tbody td.row-num {
     text-align: center;
@@ -204,7 +205,7 @@
     background: transparent;
     padding: calc(4px * var(--sheet-zoom)) calc(8px * var(--sheet-zoom));
     font-family: inherit;
-    font-size: calc(13px * var(--sheet-zoom));
+    font-size: inherit;
     color: #222;
     outline: none;
     display: block;
@@ -879,6 +880,7 @@ function applyZoom() {
 function setZoom(next) {
   _zoomPercent = Math.max(50, Math.min(200, next));
   applyZoom();
+  render();
 }
 
 function zoomIn() {
