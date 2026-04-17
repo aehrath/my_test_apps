@@ -758,7 +758,7 @@ function readSheetFromWorkbook(wb, sheetName) {
     rows2d.push(cells);
   }
   while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
-  const split = splitSheetRows(rows2d);
+  const split = splitSheetRows(rows2d, [], ws['!merges'] || []);
   return {
     headers: split.headers,
     rows: split.rows,
@@ -778,14 +778,15 @@ function workbookMatchesSheets(buf, expectedSheets) {
   });
 }
 
-function splitSheetRows(rows2d, styles2d = []) {
+function splitSheetRows(rows2d, styles2d = [], merges = []) {
   if (!rows2d.length) {
     return { headers: [], rows: [], headerStyles: [], rowStyles: [], headerRowIndex: 0 };
   }
   const counts = rows2d.map(row => row.reduce((n, v) => n + (v !== '' ? 1 : 0), 0));
   let headerIdx = counts.reduce((best, count, idx) => count > counts[best] ? idx : best, 0);
   if (counts[headerIdx] === 0) headerIdx = 0;
-  if (headerIdx > 0) {
+  const hasTopRowspanMerge = (merges || []).some(m => (m?.s?.r === 0) && (m?.e?.r > m?.s?.r));
+  if (headerIdx > 0 || hasTopRowspanMerge) {
     const cols = rows2d.reduce((n, row) => Math.max(n, row.length), 0);
     return {
       headers: Array.from({ length: cols }, (_, i) => excelColName(i)),
@@ -923,7 +924,7 @@ async function parseXlsxBuffer(buf) {
       styles2d.push(rowSt);
     }
     while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
-    const split = splitSheetRows(rows2d, styles2d);
+    const split = splitSheetRows(rows2d, styles2d, ws['!merges'] || []);
     return {
       name,
       headers: split.headers,
@@ -957,6 +958,13 @@ function render() {
   updateStatus();
   autoResize();
   renderSheetTabs();
+}
+
+function resetViewportToTop() {
+  const wrap = document.getElementById('table-wrap');
+  if (!wrap) return;
+  wrap.scrollTop = 0;
+  wrap.scrollLeft = 0;
 }
 
 function applyZoom() {
@@ -1926,6 +1934,7 @@ function openFile() {
       resetSelection();
       clearSearch();
       render();
+      resetViewportToTop();
     } else {
       alert('Failed to load file: ' + (json.error || 'unknown error'));
     }
@@ -2140,6 +2149,9 @@ function currentGHPath() {
   return document.getElementById('gh-path')?.value.trim() || '';
 }
 function setGHStatus(msg, cls) { setStatus('gh-status', msg, cls); }
+function currentSheetName() {
+  return S.sheets?.[S.activeSheet]?.name || '';
+}
 
 // ── Baseline (last committed / loaded state for instant diff) ──────────────
 let baseline = { headers: [], rows: [] };
@@ -2261,17 +2273,18 @@ function buildInlineDiffMapping(curH, curR, commitH, commitR) {
 }
 
 // Parse a /api/github/version response into {headers, rows}
-function _parseVersionData(data) {
+function _parseVersionData(data, preferredSheetName = currentSheetName()) {
   if (data.format === 'xlsx') {
     if (data.sheets?.length) {
-      const first = data.sheets[0] || {};
-      return { headers: first.headers || [], rows: first.rows || [] };
+      const match = data.sheets.find(sh => sh.name === preferredSheetName) || data.sheets[S.activeSheet] || data.sheets[0] || {};
+      return { headers: match.headers || [], rows: match.rows || [] };
     }
     if (data.rawB64) {
       // Server sent raw bytes — parse with SheetJS in browser
       const u8 = Uint8Array.from(atob(data.rawB64), ch => ch.charCodeAt(0));
       const wb  = XLSX.read(u8, { type: 'array', cellDates: true, cellStyles: true });
-      const ws  = wb.Sheets[wb.SheetNames[0]];
+      const sheetName = wb.SheetNames.includes(preferredSheetName) ? preferredSheetName : (wb.SheetNames[S.activeSheet] || wb.SheetNames[0]);
+      const ws  = wb.Sheets[sheetName];
       if (!ws || !ws['!ref']) return { headers: [], rows: [] };
       const range = XLSX.utils.decode_range(ws['!ref']);
       const rows2d = [];
@@ -2288,7 +2301,7 @@ function _parseVersionData(data) {
         rows2d.push(cells);
       }
       while (rows2d.length && rows2d[rows2d.length-1].every(c => c==='')) rows2d.pop();
-      const split = splitSheetRows(rows2d);
+      const split = splitSheetRows(rows2d, [], ws['!merges'] || []);
       return { headers: split.headers, rows: split.rows };
     }
     return { headers: data.headers || [], rows: data.rows || [] };
@@ -2300,7 +2313,7 @@ async function showDiff(sha, label) {
   const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
   if (data.error) { alert('Could not fetch version: ' + data.error); return; }
 
-  const { headers: commitH, rows: commitR } = _parseVersionData(data);
+  const { headers: commitH, rows: commitR } = _parseVersionData(data, currentSheetName());
   _diffVersion = { sha, headers: commitH, rows: commitR };
 
   const { mapping, ghostRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
@@ -2343,6 +2356,8 @@ async function loadVersion(sha) {
   if (data.error) { alert('Error: ' + data.error); return; }
   if (data.format === 'xlsx' && data.sheets?.length) {
     const sheets = data.sheets;
+    const nextIndex = Math.max(0, sheets.findIndex(sh => sh.name === currentSheetName()));
+    const activeSheet = sheets[nextIndex] || sheets[0] || {};
     if (data.rawB64) {
       try {
         const u8 = Uint8Array.from(atob(data.rawB64), ch => ch.charCodeAt(0));
@@ -2367,20 +2382,20 @@ async function loadVersion(sha) {
     const json = await res.json();
     if (!json.ok) { alert('Failed to load version: ' + (json.error || 'unknown error')); return; }
     S = {
-      headers: sheets[0]?.headers || [],
-      rows: sheets[0]?.rows || [],
+      headers: activeSheet.headers || [],
+      rows: activeSheet.rows || [],
       filepath: currentGHPath() || S.filepath || 'version.xlsx',
       filetype: 'xlsx',
       sheets: sheets.map(sh => ({ name: sh.name })),
-      activeSheet: 0,
+      activeSheet: nextIndex,
       modified: false,
     };
     _cellStyles = {
-      headerStyles: sheets[0]?.headerStyles || [],
-      rowStyles: sheets[0]?.rowStyles || [],
+      headerStyles: activeSheet.headerStyles || [],
+      rowStyles: activeSheet.rowStyles || [],
     };
-    _sheetImages = sheets[0]?.images || [];
-    _sheetMerges = sheets[0]?.merges || [];
+    _sheetImages = activeSheet.images || [];
+    _sheetMerges = activeSheet.merges || [];
     setBaseline(S.headers, S.rows);
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
     sortCol = -1; sortAsc = true;
@@ -2406,6 +2421,8 @@ async function loadVersion(sha) {
       alert('Failed to parse Excel file: ' + (parsed.error || 'unknown error')); return;
     }
     const sheets = parsed.sheets || [];
+    const nextIndex = Math.max(0, sheets.findIndex(sh => sh.name === currentSheetName()));
+    const activeSheet = sheets[nextIndex] || sheets[0] || {};
     _xlsxOrigBuf = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
     _xlsxWb = null;
     const res = await fetch('/api/load-content', {
@@ -2420,20 +2437,20 @@ async function loadVersion(sha) {
     const json = await res.json();
     if (!json.ok) { alert('Failed to load version: ' + (json.error || 'unknown error')); return; }
     S = {
-      headers: sheets[0]?.headers || [],
-      rows: sheets[0]?.rows || [],
+      headers: activeSheet.headers || [],
+      rows: activeSheet.rows || [],
       filepath: currentGHPath() || S.filepath || 'version.xlsx',
       filetype: 'xlsx',
       sheets: sheets.map(sh => ({ name: sh.name })),
-      activeSheet: 0,
+      activeSheet: nextIndex,
       modified: false,
     };
     _cellStyles = {
-      headerStyles: sheets[0]?.headerStyles || [],
-      rowStyles: sheets[0]?.rowStyles || [],
+      headerStyles: activeSheet.headerStyles || [],
+      rowStyles: activeSheet.rowStyles || [],
     };
-    _sheetImages = sheets[0]?.images || [];
-    _sheetMerges = sheets[0]?.merges || [];
+    _sheetImages = activeSheet.images || [];
+    _sheetMerges = activeSheet.merges || [];
     setBaseline(S.headers, S.rows);
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
     sortCol = -1; sortAsc = true;
@@ -2443,7 +2460,7 @@ async function loadVersion(sha) {
     render();
     return;
   }
-  const { headers, rows } = _parseVersionData(data);
+  const { headers, rows } = _parseVersionData(data, currentSheetName());
   S.headers = headers; S.rows = rows;
   _cellStyles = null;
   _sheetImages = [];
@@ -2714,6 +2731,7 @@ async function switchSheet(idx) {
   setBaseline(S.headers, S.rows);
   resetSelection(); clearSearch();
   render();
+  resetViewportToTop();
 }
 
 async function addSheet() {

@@ -12,6 +12,7 @@ import io
 import json
 import sys
 import threading
+import warnings
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -308,7 +309,13 @@ def _merge_ref_for_sheet(sheet, merge):
 def _parse_xlsx_sheets_with_styles(raw_bytes):
     if not _XLSX_OK:
         raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
-    wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message='Slicer List extension is not supported and will be removed',
+            category=UserWarning,
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
     theme_colors = _parse_theme_colors(wb)
     image_map = _parse_xlsx_images(raw_bytes)
     sheets = []
@@ -357,7 +364,11 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
                 header_idx = 0
         else:
             header_idx = 0
-        has_preamble = header_idx > 0
+        has_top_rowspan_merge = any(
+            merged.min_row == 1 and merged.max_row > merged.min_row
+            for merged in ws.merged_cells.ranges
+        )
+        has_preamble = header_idx > 0 or has_top_rowspan_merge
         if has_preamble:
             headers = [_excel_col_name(i) for i in range(max_col)]
             header_styles = []
@@ -612,7 +623,13 @@ def _parse_xlsx(raw_bytes):
     """Parse an .xlsx binary into (headers, rows). Requires openpyxl."""
     if not _XLSX_OK:
         raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
-    wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message='Slicer List extension is not supported and will be removed',
+            category=UserWarning,
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
     ws = wb.active
     if ws is None:
         # Workbook has no active sheet — try first sheet
