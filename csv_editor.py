@@ -364,27 +364,13 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
                 header_idx = 0
         else:
             header_idx = 0
-        has_top_rowspan_merge = any(
-            merged.min_row == 1 and merged.max_row > merged.min_row
-            for merged in ws.merged_cells.ranges
-        )
-        has_preamble = header_idx > 0 or has_top_rowspan_merge
-        if has_preamble:
-            headers = [_excel_col_name(i) for i in range(max_col)]
-            header_styles = []
-            leading_rows = rows2d
-            trailing_rows = []
-            leading_styles = styles2d
-            trailing_styles = []
-            header_idx_out = -1
-        else:
-            headers = rows2d[header_idx] if rows2d else []
-            header_styles = styles2d[header_idx] if styles2d else []
-            leading_rows = rows2d[:header_idx]
-            trailing_rows = rows2d[header_idx + 1:] if len(rows2d) > header_idx + 1 else []
-            leading_styles = styles2d[:header_idx]
-            trailing_styles = styles2d[header_idx + 1:] if len(styles2d) > header_idx + 1 else []
-            header_idx_out = header_idx
+        headers = rows2d[header_idx] if rows2d else []
+        header_styles = styles2d[header_idx] if styles2d else []
+        leading_rows = rows2d[:header_idx]
+        trailing_rows = rows2d[header_idx + 1:] if len(rows2d) > header_idx + 1 else []
+        leading_styles = styles2d[:header_idx]
+        trailing_styles = styles2d[header_idx + 1:] if len(styles2d) > header_idx + 1 else []
+        header_idx_out = header_idx
         sheets.append({
             'name': ws.title,
             'headers': headers,
@@ -739,9 +725,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/':
             self._serve_html()
         elif self.path == '/api/data':
+            active = state.sheets[state.active_sheet]
             self._json({
                 'headers':     state.headers,
                 'rows':        state.rows,
+                'headerRowIndex': active.get('headerRowIndex', 0),
                 'filepath':    state.filepath,
                 'filetype':    state.filetype,
                 'sheets':      [{'name': s['name']} for s in state.sheets],

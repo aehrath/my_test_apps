@@ -143,8 +143,6 @@
 
   /* Header */
   thead th {
-    position: sticky;
-    top: calc(32px * var(--sheet-zoom));
     z-index: 2;
     background: #dce8f7;
     border: 1px solid #b8cfe8;
@@ -279,8 +277,6 @@
   }
   .header-filter-footer button.primary:hover { background: #3a7db5; }
   #excel-col-row th {
-    position: sticky;
-    top: 0;
     z-index: 3;
     background: #eef3f9;
     border-color: #cfd8e3;
@@ -319,10 +315,29 @@
   tbody tr.odd  { background: #f6f9ff; }
   tbody tr:hover { background: #edf3fc; }
   tbody tr.selected-row { background: #d6e8ff !important; }
+  tbody tr.sheet-header-row { background: #dce8f7; }
+  tbody tr.sheet-header-row:hover { background: #c8d8ee; }
 
   thead th.selected-col { background: #a8c4e8; }
   tbody td.selected-col { background: rgba(100,160,255,.10); }
   tbody tr.selected-row td.selected-col { background: rgba(80,140,255,.30) !important; }
+  tbody tr.sheet-header-row td {
+    background: #dce8f7;
+    border: 1px solid #b8cfe8;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: none;
+  }
+  tbody tr.sheet-header-row td.selected-col { background: #a8c4e8; }
+  tbody tr.sheet-header-row td.row-num {
+    text-align: center;
+    cursor: default;
+    background: #d5e4f4;
+    color: #556677;
+    border-right: 2px solid #b8cfe8;
+  }
 
   tbody td {
     border: 1px solid #dde;
@@ -869,7 +884,7 @@ function _resolveColor(c, themeColors) {
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
-let S = { headers: [], rows: [], filepath: null, modified: false };
+let S = { headers: [], rows: [], headerRowIndex: 0, filepath: null, modified: false };
 let _xlsxWb = null;          // ExcelJS workbook for style-preserving save
 let _xlsxOrigBuf = null;     // original ArrayBuffer — reload ExcelJS lazily if load failed
 let _cellStyles = null;      // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
@@ -986,17 +1001,6 @@ function splitSheetRows(rows2d, styles2d = [], merges = []) {
   const counts = rows2d.map(row => row.reduce((n, v) => n + (v !== '' ? 1 : 0), 0));
   let headerIdx = counts.reduce((best, count, idx) => count > counts[best] ? idx : best, 0);
   if (counts[headerIdx] === 0) headerIdx = 0;
-  const hasTopRowspanMerge = (merges || []).some(m => (m?.s?.r === 0) && (m?.e?.r > m?.s?.r));
-  if (headerIdx > 0 || hasTopRowspanMerge) {
-    const cols = rows2d.reduce((n, row) => Math.max(n, row.length), 0);
-    return {
-      headers: Array.from({ length: cols }, (_, i) => excelColName(i)),
-      rows: rows2d,
-      headerStyles: [],
-      rowStyles: styles2d,
-      headerRowIndex: -1,
-    };
-  }
   const leadingRows = rows2d.slice(0, headerIdx);
   const trailingRows = rows2d.slice(headerIdx + 1);
   const leadingStyles = styles2d.slice(0, headerIdx);
@@ -1108,12 +1112,9 @@ function renderSheetImages() {
   if (!_sheetImages?.length) return;
 
   const topBar = document.getElementById('excel-col-row');
-  const headerRow = document.getElementById('header-row');
   const table = document.getElementById('csv-table');
   const rowHeight = Math.round(28 * (_zoomPercent / 100));
   const topBarHeight = topBar && !topBar.classList.contains('hidden-row') ? topBar.getBoundingClientRect().height : 0;
-  const headerHeight = headerRow && !headerRow.classList.contains('header-sizer-row') ? headerRow.getBoundingClientRect().height : 0;
-  const headerOffset = topBarHeight + headerHeight;
   const tableLeft = table ? table.getBoundingClientRect().left : 0;
   const ths = [...document.querySelectorAll('#header-row th')].slice(1);
   const colLefts = ths.map(th => (th.getBoundingClientRect().left - tableLeft));
@@ -1129,7 +1130,7 @@ function renderSheetImages() {
     const xInset = Math.max(4, Math.round(8 * (_zoomPercent / 100)));
     const yInset = Math.max(2, Math.round(4 * (_zoomPercent / 100)));
     el.style.left = `${(colLefts[col] ?? fallbackLeft) + xInset}px`;
-    el.style.top = `${headerOffset + row * rowHeight + yInset}px`;
+    el.style.top = `${topBarHeight + row * rowHeight + yInset}px`;
     el.style.maxWidth = `${Math.round(180 * (_zoomPercent / 100))}px`;
     el.style.maxHeight = `${Math.round(72 * (_zoomPercent / 100))}px`;
     layer.appendChild(el);
@@ -1166,6 +1167,59 @@ function colSelectionOverlaps(start, span = 1) {
     if (selectedCols.has(c)) return true;
   }
   return false;
+}
+
+function sheetHeaderRowIndex() {
+  const idx = Number(S.headerRowIndex);
+  return Number.isFinite(idx) ? idx : 0;
+}
+
+function sheetRowNumberForBodyRow(rowIdx) {
+  const headerIdx = sheetHeaderRowIndex();
+  return rowIdx + 1 + (headerIdx >= 0 && rowIdx >= headerIdx ? 1 : 0);
+}
+
+function createHeaderCellContent(cell, colIdx, span) {
+  cell.title = 'Click to sort/select • Shift/Cmd+click to multi-select • Double-click to rename';
+  cell.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
+  cell.dataset.colStart = String(colIdx);
+  cell.dataset.colSpan = String(span);
+  if (span > 1) cell.colSpan = span;
+  if (colSelectionOverlaps(colIdx, span)) cell.classList.add('selected-col');
+  const arrow = sortCol === colIdx ? (sortAsc ? ' ▲' : ' ▼') : '';
+  const wrap = document.createElement('div');
+  wrap.className = 'header-cell';
+  const label = document.createElement('span');
+  label.className = 'header-cell-label';
+  label.textContent = S.headers[colIdx] + arrow;
+  wrap.appendChild(label);
+  const filterBtn = document.createElement('button');
+  filterBtn.type = 'button';
+  filterBtn.className = 'header-filter-btn' + (isColumnFiltered(colIdx) ? ' active' : '');
+  filterBtn.textContent = '▼';
+  filterBtn.title = 'Filter and sort this column';
+  filterBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (_headerFilterState?.col === colIdx) closeHeaderFilterMenu();
+    else openHeaderFilterMenu(colIdx, filterBtn);
+  };
+  wrap.appendChild(filterBtn);
+  cell.appendChild(wrap);
+  label.onclick = (e) => {
+    if (span > 1 && !(e.shiftKey || e.metaKey || e.ctrlKey)) {
+      selectedCols = new Set(Array.from({ length: span }, (_, off) => colIdx + off));
+      anchorCol = colIdx;
+      updateSelectionUI();
+    } else {
+      selectCol(colIdx, e);
+    }
+    if (!e.shiftKey && !e.metaKey && !e.ctrlKey) sortBy(colIdx);
+  };
+  cell.ondblclick = (e) => { e.stopPropagation(); renameColumn(colIdx); };
+  if (_cellStyles && _cellStyles.headerStyles[colIdx]) {
+    const st = _cellStyles.headerStyles[colIdx];
+    if (st) applyExcelStyle(cell, null, st);
+  }
 }
 
 function shiftBodyMergesForRowInsert(insertAt) {
@@ -1476,14 +1530,11 @@ function renderHeaders() {
   excelTr.innerHTML = '';
   tr.innerHTML = '';
   excelTr.className = letterHeaders ? '' : 'hidden-row';
-  tr.className = letterHeaders ? 'header-sizer-row' : '';
+  tr.className = 'header-sizer-row';
   if (letterHeaders) {
     excelTr.appendChild(th('', 'row-num'));
-    tr.appendChild(th('', 'row-num'));
-  } else {
-    const corner = th('#', 'row-num');
-    tr.appendChild(corner);
   }
+  tr.appendChild(th(letterHeaders ? '' : '#', 'row-num'));
 
   S.headers.forEach((h, i) => {
     if (letterHeaders) {
@@ -1508,47 +1559,8 @@ function renderHeaders() {
     const el = document.createElement('th');
     const merge = mergeMap.starts.get(mergeKey('header', 0, i));
     const span = merge?.colspan || 1;
-    el.title = 'Click to sort/select • Shift/Cmd+click to multi-select • Double-click to rename';
-    el.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
-    el.dataset.colStart = String(i);
-    el.dataset.colSpan = String(span);
-    if (span > 1) el.colSpan = span;
-    if (colSelectionOverlaps(i, span)) el.classList.add('selected-col');
-    const arrow = sortCol === i ? (sortAsc ? ' ▲' : ' ▼') : '';
-    const wrap = document.createElement('div');
-    wrap.className = 'header-cell';
-    const label = document.createElement('span');
-    label.className = 'header-cell-label';
-    label.textContent = h + arrow;
-    wrap.appendChild(label);
-    const filterBtn = document.createElement('button');
-    filterBtn.type = 'button';
-    filterBtn.className = 'header-filter-btn' + (isColumnFiltered(i) ? ' active' : '');
-    filterBtn.textContent = '▼';
-    filterBtn.title = 'Filter and sort this column';
-    filterBtn.onclick = (e) => {
-      e.stopPropagation();
-      if (_headerFilterState?.col === i) closeHeaderFilterMenu();
-      else openHeaderFilterMenu(i, filterBtn);
-    };
-    wrap.appendChild(filterBtn);
-    el.appendChild(wrap);
-    label.onclick = (e) => {
-      if (span > 1 && !(e.shiftKey || e.metaKey || e.ctrlKey)) {
-        selectedCols = new Set(Array.from({ length: span }, (_, off) => i + off));
-        anchorCol = i;
-        updateSelectionUI();
-      } else {
-        selectCol(i, e);
-      }
-      if (!e.shiftKey && !e.metaKey && !e.ctrlKey) sortBy(i);
-    };
-    el.ondblclick = (e) => { e.stopPropagation(); renameColumn(i); };
+    createHeaderCellContent(el, i, span);
     tr.appendChild(el);
-    if (_cellStyles && _cellStyles.headerStyles[i]) {
-      const st = _cellStyles.headerStyles[i];
-      if (st) applyExcelStyle(el, null, st);
-    }
   });
 }
 
@@ -1578,7 +1590,9 @@ function renderRows() {
   const tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
   const mergeMap = buildMergeMaps('body');
+  const headerMergeMap = buildMergeMaps('header');
   const visibleRows = getFilteredRowIndexes();
+  const headerIdx = sheetHeaderRowIndex();
   const frag = document.createDocumentFragment();
 
   // Index incoming (new-in-commit) rows by the current-row index they appear before
@@ -1606,9 +1620,34 @@ function renderRows() {
     });
   }
 
-  insertIncoming(0);
+  function insertSheetHeaderRow() {
+    const tr = document.createElement('tr');
+    tr.className = 'sheet-header-row';
+    const rn = document.createElement('td');
+    rn.className = 'row-num header-row-num';
+    rn.textContent = headerIdx + 1;
+    tr.appendChild(rn);
+
+    S.headers.forEach((h, c) => {
+      if (headerMergeMap.covered.has(mergeKey('header', 0, c))) return;
+      const td = document.createElement('td');
+      const merge = headerMergeMap.starts.get(mergeKey('header', 0, c));
+      const span = merge?.colspan || 1;
+      createHeaderCellContent(td, c, span);
+      tr.appendChild(td);
+    });
+    frag.appendChild(tr);
+  }
+
+  let insertedHeader = headerIdx < 0;
+  if (headerIdx !== 0) insertIncoming(0);
 
   visibleRows.forEach((r, visibleIdx) => {
+    if (!insertedHeader && r >= headerIdx) {
+      insertSheetHeaderRow();
+      insertedHeader = true;
+      insertIncoming(headerIdx);
+    }
     const row = S.rows[r];
     const entry = _inlineDiff ? (_inlineDiff.mapping[r] ?? { type: 'added' }) : null;
     const tr = document.createElement('tr');
@@ -1619,7 +1658,7 @@ function renderRows() {
 
     const rn = document.createElement('td');
     rn.className = 'row-num';
-    rn.textContent = r + 1;
+    rn.textContent = sheetRowNumberForBodyRow(r);
     rn.title = 'Click • Shift+click to range • Cmd+click to toggle';
     rn.addEventListener('mousedown', (e) => { e.preventDefault(); selectRow(r, e); });
     tr.appendChild(rn);
@@ -1690,8 +1729,12 @@ function renderRows() {
     });
 
     frag.appendChild(tr);
-    insertIncoming(r + 1);
+    if (insertedHeader || r + 1 !== headerIdx) insertIncoming(r + 1);
   });
+  if (!insertedHeader) {
+    insertSheetHeaderRow();
+    insertIncoming(headerIdx);
+  }
   tbody.appendChild(frag);
 }
 
@@ -2449,7 +2492,7 @@ function updateStatus() {
   const visibleRows = getFilteredRowIndexes();
   const filterCount = activeColumnFilters().length;
   const selParts = [];
-  if (selectedRows.size === 1) selParts.push(`Row ${[...selectedRows][0] + 1}`);
+  if (selectedRows.size === 1) selParts.push(`Row ${sheetRowNumberForBodyRow([...selectedRows][0])}`);
   else if (selectedRows.size > 1) selParts.push(`${selectedRows.size} rows`);
   if (selectedCols.size === 1) selParts.push(`Col "${S.headers[[...selectedCols][0]]}"`);
   else if (selectedCols.size > 1) selParts.push(`${selectedCols.size} cols`);
@@ -2765,6 +2808,7 @@ async function loadVersion(sha) {
     S = {
       headers: activeSheet.headers || [],
       rows: activeSheet.rows || [],
+      headerRowIndex: activeSheet.headerRowIndex ?? 0,
       filepath: currentGHPath() || S.filepath || 'version.xlsx',
       filetype: 'xlsx',
       sheets: sheets.map(sh => ({ name: sh.name })),
@@ -2821,6 +2865,7 @@ async function loadVersion(sha) {
     S = {
       headers: activeSheet.headers || [],
       rows: activeSheet.rows || [],
+      headerRowIndex: activeSheet.headerRowIndex ?? 0,
       filepath: currentGHPath() || S.filepath || 'version.xlsx',
       filetype: 'xlsx',
       sheets: sheets.map(sh => ({ name: sh.name })),
