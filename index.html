@@ -160,6 +160,124 @@
   }
   thead th:hover { background: #c8d8ee; }
   thead th.row-num { min-width: calc(42px * var(--sheet-zoom)); width: calc(42px * var(--sheet-zoom)); cursor: default; text-align: center; }
+  .header-cell {
+    display: flex;
+    align-items: center;
+    gap: calc(6px * var(--sheet-zoom));
+    width: 100%;
+    min-width: 0;
+  }
+  .header-cell-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .header-filter-btn {
+    flex: 0 0 auto;
+    width: calc(18px * var(--sheet-zoom));
+    height: calc(18px * var(--sheet-zoom));
+    border: 1px solid #9fb6ce;
+    border-radius: 3px;
+    background: rgba(255,255,255,.55);
+    color: #345;
+    font-size: calc(10px * var(--sheet-zoom));
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+  }
+  .header-filter-btn:hover { background: rgba(255,255,255,.8); }
+  .header-filter-btn.active {
+    background: #5f85ad;
+    color: #fff;
+    border-color: #4d739b;
+  }
+  #header-filter-menu {
+    position: fixed;
+    z-index: 120;
+    min-width: 220px;
+    max-width: 280px;
+    display: none;
+    background: #fff;
+    border: 1px solid #b8cfe8;
+    border-radius: 8px;
+    box-shadow: 0 12px 28px rgba(0,0,0,.18);
+    padding: 8px;
+  }
+  #header-filter-menu.open { display: block; }
+  .header-filter-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .header-filter-actions button,
+  .header-filter-footer button {
+    width: 100%;
+    border: 1px solid #ccd9e6;
+    background: #f5f8fc;
+    border-radius: 5px;
+    padding: 6px 8px;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .header-filter-actions button:hover,
+  .header-filter-footer button:hover { background: #eaf1f9; }
+  #header-filter-search {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #ccd9e6;
+    border-radius: 5px;
+    font-size: 12px;
+    margin-bottom: 8px;
+  }
+  #header-filter-values {
+    max-height: 220px;
+    overflow: auto;
+    border: 1px solid #e1e8f0;
+    border-radius: 6px;
+    padding: 4px;
+    background: #fbfdff;
+  }
+  .header-filter-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .header-filter-option:hover { background: #eef4fb; }
+  .header-filter-option input { margin: 0; }
+  .header-filter-option span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .header-filter-empty {
+    padding: 10px 8px;
+    color: #778899;
+    font-size: 12px;
+    text-align: center;
+  }
+  .header-filter-footer {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .header-filter-footer button {
+    text-align: center;
+  }
+  .header-filter-footer button.primary {
+    background: #2d6a9f;
+    border-color: #2d6a9f;
+    color: #fff;
+  }
+  .header-filter-footer button.primary:hover { background: #3a7db5; }
   #excel-col-row th {
     position: sticky;
     top: 0;
@@ -608,6 +726,20 @@
   </div>
 </div>
 
+<div id="header-filter-menu" onclick="event.stopPropagation()">
+  <div class="header-filter-actions">
+    <button onclick="sortFromFilterMenu(true)">Sort A to Z</button>
+    <button onclick="sortFromFilterMenu(false)">Sort Z to A</button>
+    <button onclick="clearColumnFilterFromMenu()">Clear Filter</button>
+  </div>
+  <input id="header-filter-search" type="text" placeholder="Search values…" oninput="renderHeaderFilterOptions()">
+  <div id="header-filter-values"></div>
+  <div class="header-filter-footer">
+    <button onclick="closeHeaderFilterMenu()">Cancel</button>
+    <button class="primary" onclick="applyHeaderFilterMenu()">Apply</button>
+  </div>
+</div>
+
 <script>
 // ── Excel theme-color helpers ──────────────────────────────────────────────
 // Extract the 12 base theme colors from SheetJS wb.Themes XML (e.g. dk1, lt1, accent1–6 …)
@@ -692,6 +824,8 @@ let highlightCells = new Set(); // "r,c"
 let searchCaseSensitive = false;
 let searchWholeWord = false;
 let _zoomPercent = 100;
+let _columnFilters = {};
+let _headerFilterState = null;
 
 function toggleFileMenu(e) {
   e?.stopPropagation();
@@ -712,6 +846,7 @@ function toggleToolbarMenu(id) {
 
 function closeMenus() {
   document.querySelectorAll('.toolbar-menu.open').forEach(el => el.classList.remove('open'));
+  closeHeaderFilterMenu();
 }
 
 function menuAction(fn) {
@@ -965,6 +1100,11 @@ function resetViewportToTop() {
   if (!wrap) return;
   wrap.scrollTop = 0;
   wrap.scrollLeft = 0;
+}
+
+function resetColumnFilters() {
+  _columnFilters = {};
+  closeHeaderFilterMenu();
 }
 
 function applyZoom() {
@@ -1227,6 +1367,131 @@ function hasExcelLetterHeaders() {
   return S.headers.length > 0 && S.headers.every((h, i) => h === excelColName(i));
 }
 
+function normalizedFilterValue(value) {
+  return value == null ? '' : String(value);
+}
+
+function isColumnFiltered(col) {
+  return Array.isArray(_columnFilters[col]);
+}
+
+function passesColumnFilters(row) {
+  return Object.entries(_columnFilters).every(([colKey, allowed]) => {
+    if (!Array.isArray(allowed)) return true;
+    return allowed.includes(normalizedFilterValue(row[+colKey]));
+  });
+}
+
+function getFilteredRowIndexes() {
+  const hasFilters = Object.values(_columnFilters).some(v => Array.isArray(v));
+  if (!hasFilters) return S.rows.map((_, idx) => idx);
+  return S.rows.map((row, idx) => ({ row, idx })).filter(entry => passesColumnFilters(entry.row)).map(entry => entry.idx);
+}
+
+function currentHeaderFilterValues() {
+  if (!_headerFilterState) return [];
+  const query = (_headerFilterState.query || '').trim().toLowerCase();
+  return _headerFilterState.values.filter(value => !query || value.toLowerCase().includes(query));
+}
+
+function closeHeaderFilterMenu() {
+  const menu = document.getElementById('header-filter-menu');
+  if (menu) menu.classList.remove('open');
+  _headerFilterState = null;
+}
+
+function renderHeaderFilterOptions() {
+  if (!_headerFilterState) return;
+  const search = document.getElementById('header-filter-search');
+  _headerFilterState.query = search?.value || '';
+  const box = document.getElementById('header-filter-values');
+  if (!box) return;
+  const values = currentHeaderFilterValues();
+  if (!values.length) {
+    box.innerHTML = '<div class="header-filter-empty">No matching values</div>';
+    return;
+  }
+  const allChecked = values.every(value => _headerFilterState.checked.has(value));
+  box.innerHTML = '';
+  const selectAll = document.createElement('label');
+  selectAll.className = 'header-filter-option';
+  selectAll.innerHTML = `<input type="checkbox"${allChecked ? ' checked' : ''}><span>(Select All)</span>`;
+  selectAll.querySelector('input').addEventListener('change', e => {
+    if (e.target.checked) values.forEach(value => _headerFilterState.checked.add(value));
+    else values.forEach(value => _headerFilterState.checked.delete(value));
+    renderHeaderFilterOptions();
+  });
+  box.appendChild(selectAll);
+  values.forEach(value => {
+    const label = document.createElement('label');
+    label.className = 'header-filter-option';
+    const safe = value === '' ? '(Blanks)' : escHtml(value);
+    label.innerHTML = `<input type="checkbox"${_headerFilterState.checked.has(value) ? ' checked' : ''}><span>${safe}</span>`;
+    label.querySelector('input').addEventListener('change', e => {
+      if (e.target.checked) _headerFilterState.checked.add(value);
+      else _headerFilterState.checked.delete(value);
+    });
+    box.appendChild(label);
+  });
+}
+
+function openHeaderFilterMenu(col, btn) {
+  const values = [...new Set(S.rows.map(row => normalizedFilterValue(row[col])))].sort((a, b) => {
+    if (!a && b) return 1;
+    if (a && !b) return -1;
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  const existing = Array.isArray(_columnFilters[col]) ? _columnFilters[col] : values;
+  _headerFilterState = {
+    col,
+    values,
+    checked: new Set(existing),
+    query: '',
+  };
+  const menu = document.getElementById('header-filter-menu');
+  const search = document.getElementById('header-filter-search');
+  if (!menu || !btn) return;
+  search.value = '';
+  renderHeaderFilterOptions();
+  const rect = btn.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(window.innerWidth - 290, rect.right - 220)) + 'px';
+  menu.style.top = Math.min(window.innerHeight - 20, rect.bottom + 6) + 'px';
+  menu.classList.add('open');
+}
+
+function applyHeaderFilterMenu() {
+  if (!_headerFilterState) return;
+  const { col, values, checked } = _headerFilterState;
+  if (checked.size === values.length) delete _columnFilters[col];
+  else _columnFilters[col] = values.filter(value => checked.has(value));
+  closeHeaderFilterMenu();
+  render();
+}
+
+function clearColumnFilter(col) {
+  delete _columnFilters[col];
+}
+
+function clearColumnFilterFromMenu() {
+  if (!_headerFilterState) return;
+  clearColumnFilter(_headerFilterState.col);
+  closeHeaderFilterMenu();
+  render();
+}
+
+function sortFromFilterMenu(asc) {
+  if (!_headerFilterState) return;
+  const col = _headerFilterState.col;
+  closeHeaderFilterMenu();
+  if (sortCol === col) {
+    sortAsc = !asc;
+  } else {
+    sortCol = col;
+    sortAsc = !asc;
+  }
+  sortBy(col);
+}
+
 function renderHeaders() {
   const letterHeaders = hasExcelLetterHeaders();
   const excelTr = document.getElementById('excel-col-row');
@@ -1274,8 +1539,25 @@ function renderHeaders() {
     if (span > 1) el.colSpan = span;
     if (colSelectionOverlaps(i, span)) el.classList.add('selected-col');
     const arrow = sortCol === i ? (sortAsc ? ' ▲' : ' ▼') : '';
-    el.textContent = h + arrow;
-    el.onclick = (e) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'header-cell';
+    const label = document.createElement('span');
+    label.className = 'header-cell-label';
+    label.textContent = h + arrow;
+    wrap.appendChild(label);
+    const filterBtn = document.createElement('button');
+    filterBtn.type = 'button';
+    filterBtn.className = 'header-filter-btn' + (isColumnFiltered(i) ? ' active' : '');
+    filterBtn.textContent = '▼';
+    filterBtn.title = 'Filter and sort this column';
+    filterBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (_headerFilterState?.col === i) closeHeaderFilterMenu();
+      else openHeaderFilterMenu(i, filterBtn);
+    };
+    wrap.appendChild(filterBtn);
+    el.appendChild(wrap);
+    label.onclick = (e) => {
       if (span > 1 && !(e.shiftKey || e.metaKey || e.ctrlKey)) {
         selectedCols = new Set(Array.from({ length: span }, (_, off) => i + off));
         anchorCol = i;
@@ -1320,6 +1602,7 @@ function renderRows() {
   const tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
   const mergeMap = buildMergeMaps('body');
+  const visibleRows = getFilteredRowIndexes();
 
   // Index incoming (new-in-commit) rows by the current-row index they appear before
   const ghostBefore = {};
@@ -1348,10 +1631,12 @@ function renderRows() {
 
   insertIncoming(0);
 
-  S.rows.forEach((row, r) => {
+  visibleRows.forEach((r, visibleIdx) => {
+    const row = S.rows[r];
     const entry = _inlineDiff ? (_inlineDiff.mapping[r] ?? { type: 'added' }) : null;
     const tr = document.createElement('tr');
-    tr.className = r % 2 === 0 ? 'even' : 'odd';
+    tr.className = visibleIdx % 2 === 0 ? 'even' : 'odd';
+    tr.dataset.rowIndex = String(r);
     if (selectedRows.has(r)) tr.classList.add('selected-row');
     if (entry?.type === 'added') tr.classList.add('row-diff-added');
 
@@ -1500,8 +1785,8 @@ function selectCell(r, c, e) {
 
 function updateSelectionUI() {
   // Rows
-  document.querySelectorAll('#table-body tr').forEach((tr, i) =>
-    tr.classList.toggle('selected-row', selectedRows.has(i)));
+  document.querySelectorAll('#table-body tr').forEach(tr =>
+    tr.classList.toggle('selected-row', selectedRows.has(+(tr.dataset.rowIndex || -1))));
   document.querySelectorAll('[data-col-start]').forEach(el => {
     const start = +(el.dataset.colStart || 0);
     const span = +(el.dataset.colSpan || 1);
@@ -1931,6 +2216,7 @@ function openFile() {
       }
       setBaseline(S.headers, S.rows);
       sortCol = -1; sortAsc = true;
+      resetColumnFilters();
       resetSelection();
       clearSearch();
       render();
@@ -2085,6 +2371,8 @@ function updateStatus() {
   const mod  = S.modified ? ' ●' : '';
   document.title = `CSV Editor — ${name}${mod}`;
   document.getElementById('filepath-display').textContent = S.filepath || 'Untitled';
+  const visibleRows = getFilteredRowIndexes();
+  const filterCount = Object.values(_columnFilters).filter(v => Array.isArray(v)).length;
   const selParts = [];
   if (selectedRows.size === 1) selParts.push(`Row ${[...selectedRows][0] + 1}`);
   else if (selectedRows.size > 1) selParts.push(`${selectedRows.size} rows`);
@@ -2092,6 +2380,7 @@ function updateStatus() {
   else if (selectedCols.size > 1) selParts.push(`${selectedCols.size} cols`);
   document.getElementById('status-left').textContent =
     `${S.rows.length} rows × ${S.headers.length} cols` +
+    (filterCount ? `  •  ${visibleRows.length} visible (${filterCount} filter${filterCount !== 1 ? 's' : ''})` : '') +
     (selParts.length ? `  •  ${selParts.join(', ')} selected` : '') +
     (S.modified ? '  •  Unsaved changes' : '');
   const rightParts = [];
@@ -2397,6 +2686,7 @@ async function loadVersion(sha) {
     _sheetImages = activeSheet.images || [];
     _sheetMerges = activeSheet.merges || [];
     setBaseline(S.headers, S.rows);
+    resetColumnFilters();
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
     sortCol = -1; sortAsc = true;
     _inlineDiff = null;
@@ -2452,6 +2742,7 @@ async function loadVersion(sha) {
     _sheetImages = activeSheet.images || [];
     _sheetMerges = activeSheet.merges || [];
     setBaseline(S.headers, S.rows);
+    resetColumnFilters();
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
     sortCol = -1; sortAsc = true;
     _inlineDiff = null;
@@ -2466,6 +2757,7 @@ async function loadVersion(sha) {
   _sheetImages = [];
   _sheetMerges = [];
   setBaseline(headers, rows);
+  resetColumnFilters();
   selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
   sortCol = -1; sortAsc = true;
   _inlineDiff = null;
@@ -2729,6 +3021,7 @@ async function switchSheet(idx) {
   _sheetImages = activeSh?.images || [];
   _sheetMerges = activeSh?.merges || [];
   setBaseline(S.headers, S.rows);
+  resetColumnFilters();
   resetSelection(); clearSearch();
   render();
   resetViewportToTop();
@@ -2740,6 +3033,7 @@ async function addSheet() {
   const data = await res.json();
   S = await fetch('/api/data').then(r => r.json());
   setBaseline(S.headers, S.rows);
+  resetColumnFilters();
   resetSelection(); clearSearch();
   render();
 }
@@ -2764,6 +3058,7 @@ async function deleteSheet(idx) {
   });
   S = await fetch('/api/data').then(r => r.json());
   setBaseline(S.headers, S.rows);
+  resetColumnFilters();
   resetSelection(); clearSearch();
   render();
 }
