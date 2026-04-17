@@ -1526,7 +1526,6 @@ function renderHeaders() {
   const letterHeaders = hasExcelLetterHeaders();
   const excelTr = document.getElementById('excel-col-row');
   const tr = document.getElementById('header-row');
-  const mergeMap = buildMergeMaps('header');
   excelTr.innerHTML = '';
   tr.innerHTML = '';
   excelTr.className = letterHeaders ? '' : 'hidden-row';
@@ -1555,12 +1554,9 @@ function renderHeaders() {
       tr.appendChild(sizer);
       return;
     }
-    if (mergeMap.covered.has(mergeKey('header', 0, i))) return;
-    const el = document.createElement('th');
-    const merge = mergeMap.starts.get(mergeKey('header', 0, i));
-    const span = merge?.colspan || 1;
-    createHeaderCellContent(el, i, span);
-    tr.appendChild(el);
+    const sizer = document.createElement('th');
+    sizer.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
+    tr.appendChild(sizer);
   });
 }
 
@@ -2478,6 +2474,9 @@ async function syncNow() {
     body: JSON.stringify({
       headers: S.headers,
       rows: S.rows,
+      headerRowIndex: S.headerRowIndex,
+      headerStyles: _cellStyles?.headerStyles || [],
+      rowStyles: _cellStyles?.rowStyles || [],
       merges: normalizedSheetMerges(),
     })
   });

@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from copy import copy as _copy
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -436,6 +437,75 @@ def _set_xml_cell_value(cell_el, value):
     t_el.text = '' if value is None else str(value)
 
 
+def _style_for_sheet_cell(sheet, row_idx, col_idx):
+    header_idx_raw = sheet.get('headerRowIndex', 0)
+    header_idx = int(header_idx_raw) if header_idx_raw not in (None, '') else 0
+    if header_idx >= 0 and row_idx == header_idx:
+        styles = sheet.get('headerStyles', []) or []
+        return styles[col_idx] if col_idx < len(styles) else None
+    row_styles = sheet.get('rowStyles', []) or []
+    body_idx = row_idx if header_idx < 0 or row_idx < header_idx else row_idx - 1
+    if body_idx < 0 or body_idx >= len(row_styles):
+        return None
+    row = row_styles[body_idx] or []
+    return row[col_idx] if col_idx < len(row) else None
+
+
+def _apply_style_to_cell(cell, st):
+    fill = _copy(cell.fill)
+    if st and st.get('bg'):
+        hex_color = st['bg'].lstrip('#').upper()
+        fill.patternType = 'solid'
+        fill.fill_type = 'solid'
+        fill.fgColor.rgb = hex_color
+        fill.bgColor.rgb = hex_color
+    else:
+        fill.patternType = None
+        fill.fill_type = None
+    cell.fill = fill
+
+    font = _copy(cell.font)
+    font.bold = bool(st.get('bold')) if st else False
+    font.italic = bool(st.get('italic')) if st else False
+    font.sz = st.get('fontSize') if st and st.get('fontSize') else None
+    font.name = st.get('fontFamily') if st and st.get('fontFamily') else 'Calibri'
+    font.color = (st.get('color') or '').lstrip('#').upper() if st and st.get('color') else None
+    cell.font = font
+
+    alignment = _copy(cell.alignment)
+    alignment.horizontal = st.get('align') if st and st.get('align') else None
+    cell.alignment = alignment
+
+
+def _apply_sheet_styles_to_workbook(raw_bytes, sheets):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message='Slicer List extension is not supported and will be removed',
+            category=UserWarning,
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes))
+    by_name = {sh.get('name', ''): sh for sh in sheets}
+    for ws in wb.worksheets:
+        sheet = by_name.get(ws.title)
+        if not sheet:
+            continue
+        rows = _ordered_sheet_rows(sheet)
+        max_cols = max(
+            len(sheet.get('headers', []) or []),
+            max((len(r) for r in sheet.get('rows', []) or []), default=0),
+            ws.max_column or 0,
+        )
+        for row_idx in range(max(len(rows), ws.max_row or 0)):
+            for col_idx in range(max_cols):
+                st = _style_for_sheet_cell(sheet, row_idx, col_idx)
+                cell = ws.cell(row=row_idx + 1, column=col_idx + 1)
+                _apply_style_to_cell(cell, st)
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
 def _write_xlsx_from_template(raw_bytes, sheets):
     ns = {
         'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
@@ -523,7 +593,8 @@ def _write_xlsx_from_template(raw_bytes, sheets):
                             root.insert(insert_idx, merge_cells)
                         data = _ET.tostring(root, encoding='utf-8', xml_declaration=True)
             dst.writestr(name, data)
-    return zout.getvalue()
+    result = zout.getvalue()
+    return _apply_sheet_styles_to_workbook(result, sheets)
 
 
 def _parse_xlsx_images(raw_bytes):
@@ -909,6 +980,9 @@ class Handler(BaseHTTPRequestHandler):
             state.headers = data.get('headers', state.headers)
             state.rows    = data.get('rows',    state.rows)
             active = state.sheets[state.active_sheet]
+            active['headerRowIndex'] = data.get('headerRowIndex', active.get('headerRowIndex', 0))
+            active['headerStyles'] = data.get('headerStyles', active.get('headerStyles', []))
+            active['rowStyles'] = data.get('rowStyles', active.get('rowStyles', []))
             active['merges'] = data.get('merges', active.get('merges', []))
             self._json({'ok': True})
 
