@@ -826,6 +826,8 @@ let searchWholeWord = false;
 let _zoomPercent = 100;
 let _columnFilters = {};
 let _headerFilterState = null;
+const _versionDataCache = new Map();
+const _parsedVersionCache = new Map();
 
 function toggleFileMenu(e) {
   e?.stopPropagation();
@@ -965,112 +967,9 @@ async function parseXlsxBuffer(buf) {
   const bytes = toUint8Array(buf);
   const arrayBuf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   _xlsxOrigBuf = arrayBuf;
-  let sjWb;
-  try { sjWb = XLSX.read(bytes, { type: 'array', cellDates: true, cellStyles: true }); }
-  catch(err) { throw new Error('Failed to parse Excel file: ' + err.message); }
-
-  let ejWb = null;
-  try {
-    ejWb = new ExcelJS.Workbook();
-    await ejWb.xlsx.load(arrayBuf);
-    _xlsxWb = ejWb;
-  } catch(err) {
-    _xlsxWb = null;
-  }
-
-  const themeColors = _parseThemeColors(sjWb);
-  const normalizeExcelJsColor = c => {
-    if (!c) return null;
-    if (c.argb) return { rgb: c.argb.slice(-6), tint: c.tint || 0 };
-    if (c.theme != null) return { theme: c.theme, tint: c.tint || 0 };
-    if (c.rgb) return { rgb: c.rgb.slice(-6), tint: c.tint || 0 };
-    if (c.indexed != null) return { indexed: c.indexed, tint: c.tint || 0 };
-    return null;
-  };
-  const resolveColor = c => _resolveColor(normalizeExcelJsColor(c), themeColors);
-  const resolveSheetJsColor = c => _resolveColor(c, themeColors);
-
+  _xlsxWb = null;
   _xlsxSheetOffsets = {};
-  const sheets = sjWb.SheetNames.map(name => {
-    const ws   = sjWb.Sheets[name];
-    const ejWs = ejWb ? ejWb.getWorksheet(name) : null;
-    const ref  = ws['!ref'];
-    if (!ref) return { name, headers: [], rows: [], headerStyles: [], rowStyles: [] };
-    const range = XLSX.utils.decode_range(ref);
-    _xlsxSheetOffsets[name] = {
-      rowOff: range.s.r + 1,
-      colOff: range.s.c + 1,
-      origRowCount: range.e.r - range.s.r + 1,
-      origColCount: range.e.c - range.s.c + 1,
-    };
-    const rows2d = [], styles2d = [];
-
-    for (let r = range.s.r; r <= range.e.r; r++) {
-      const cells = [], rowSt = [];
-      for (let c = range.s.c; c <= range.e.c; c++) {
-        const addr = XLSX.utils.encode_cell({ r, c });
-        const cell = ws[addr];
-        if (!cell) { cells.push(''); rowSt.push(null); continue; }
-        let val = '';
-        if (cell.t === 'b') val = cell.v ? 'TRUE' : 'FALSE';
-        else if (cell.w != null) val = cell.w;
-        else if (cell.v != null) val = String(cell.v);
-        cells.push(val);
-
-        let st = null;
-        const s = {};
-        if (ejWs) {
-          const ejCell = ejWs.getCell(r + 1, c + 1);
-          const fill = ejCell.fill || {};
-          const font = ejCell.font || {};
-          const aln = ejCell.alignment || {};
-          if (fill.type === 'pattern' && fill.pattern !== 'none') {
-            const bg = resolveColor(fill.fgColor) || resolveColor(fill.bgColor);
-            if (bg) s.bg = bg;
-          }
-          const fc = resolveColor(font.color);
-          if (fc) s.color = fc;
-          if (font.bold) s.bold = true;
-          if (font.italic) s.italic = true;
-          if (font.size) s.fontSize = font.size;
-          if (font.name) s.fontFamily = font.name;
-          if (aln.horizontal) s.align = aln.horizontal;
-        }
-        const sjStyle = cell.s || {};
-        const sjFill = sjStyle.fill || {};
-        const sjFont = sjStyle.font || {};
-        if (!s.bg) {
-          const bg = resolveSheetJsColor(sjFill.fgColor) || resolveSheetJsColor(sjFill.bgColor);
-          if (bg) s.bg = bg;
-        }
-        if (!s.color) {
-          const fc = resolveSheetJsColor(sjFont.color);
-          if (fc) s.color = fc;
-        }
-        if (!s.bold && sjFont.bold) s.bold = true;
-        if (!s.italic && sjFont.italic) s.italic = true;
-        if (!s.fontSize && sjFont.sz) s.fontSize = sjFont.sz;
-        if (!s.fontFamily && sjFont.name) s.fontFamily = sjFont.name;
-        if (!s.align && sjStyle.alignment?.horizontal) s.align = sjStyle.alignment.horizontal;
-        st = Object.keys(s).length ? s : null;
-        rowSt.push(st);
-      }
-      rows2d.push(cells);
-      styles2d.push(rowSt);
-    }
-    while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
-    const split = splitSheetRows(rows2d, styles2d, ws['!merges'] || []);
-    return {
-      name,
-      headers: split.headers,
-      rows: split.rows,
-      headerStyles: split.headerStyles,
-      rowStyles: split.rowStyles,
-      headerRowIndex: split.headerRowIndex,
-    };
-  });
-
-  return { sheets };
+  return { sheets: [] };
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -1375,17 +1274,30 @@ function isColumnFiltered(col) {
   return Array.isArray(_columnFilters[col]);
 }
 
-function passesColumnFilters(row) {
-  return Object.entries(_columnFilters).every(([colKey, allowed]) => {
-    if (!Array.isArray(allowed)) return true;
-    return allowed.includes(normalizedFilterValue(row[+colKey]));
-  });
+function activeColumnFilters() {
+  const out = [];
+  for (const colKey in _columnFilters) {
+    const allowed = _columnFilters[colKey];
+    if (!Array.isArray(allowed)) continue;
+    out.push([+colKey, new Set(allowed)]);
+  }
+  return out;
 }
 
 function getFilteredRowIndexes() {
-  const hasFilters = Object.values(_columnFilters).some(v => Array.isArray(v));
-  if (!hasFilters) return S.rows.map((_, idx) => idx);
-  return S.rows.map((row, idx) => ({ row, idx })).filter(entry => passesColumnFilters(entry.row)).map(entry => entry.idx);
+  const filters = activeColumnFilters();
+  if (!filters.length) return S.rows.map((_, idx) => idx);
+  const out = [];
+  rowLoop:
+  for (let idx = 0; idx < S.rows.length; idx++) {
+    const row = S.rows[idx];
+    for (let i = 0; i < filters.length; i++) {
+      const [col, allowed] = filters[i];
+      if (!allowed.has(normalizedFilterValue(row[col]))) continue rowLoop;
+    }
+    out.push(idx);
+  }
+  return out;
 }
 
 function currentHeaderFilterValues() {
@@ -1603,6 +1515,7 @@ function renderRows() {
   tbody.innerHTML = '';
   const mergeMap = buildMergeMaps('body');
   const visibleRows = getFilteredRowIndexes();
+  const frag = document.createDocumentFragment();
 
   // Index incoming (new-in-commit) rows by the current-row index they appear before
   const ghostBefore = {};
@@ -1625,7 +1538,7 @@ function renderRows() {
         td.textContent = g.commitRow[ci] ?? '';
         tr.appendChild(td);
       });
-      tbody.appendChild(tr);
+      frag.appendChild(tr);
     });
   }
 
@@ -1712,9 +1625,10 @@ function renderRows() {
       }
     });
 
-    tbody.appendChild(tr);
+    frag.appendChild(tr);
     insertIncoming(r + 1);
   });
+  tbody.appendChild(frag);
 }
 
 function th(text, cls) {
@@ -2372,7 +2286,7 @@ function updateStatus() {
   document.title = `CSV Editor — ${name}${mod}`;
   document.getElementById('filepath-display').textContent = S.filepath || 'Untitled';
   const visibleRows = getFilteredRowIndexes();
-  const filterCount = Object.values(_columnFilters).filter(v => Array.isArray(v)).length;
+  const filterCount = activeColumnFilters().length;
   const selParts = [];
   if (selectedRows.size === 1) selParts.push(`Row ${[...selectedRows][0] + 1}`);
   else if (selectedRows.size > 1) selParts.push(`${selectedRows.size} rows`);
@@ -2561,48 +2475,63 @@ function buildInlineDiffMapping(curH, curR, commitH, commitR) {
   return { mapping, ghostRows };
 }
 
+async function fetchVersionDataCached(sha) {
+  if (_versionDataCache.has(sha)) return _versionDataCache.get(sha);
+  const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
+  _versionDataCache.set(sha, data);
+  return data;
+}
+
 // Parse a /api/github/version response into {headers, rows}
-function _parseVersionData(data, preferredSheetName = currentSheetName()) {
+function _parseVersionData(data, preferredSheetName = currentSheetName(), cacheKey = '') {
+  const cacheId = cacheKey ? `${cacheKey}::${preferredSheetName}` : '';
+  if (cacheId && _parsedVersionCache.has(cacheId)) return _parsedVersionCache.get(cacheId);
+  let result;
   if (data.format === 'xlsx') {
     if (data.sheets?.length) {
       const match = data.sheets.find(sh => sh.name === preferredSheetName) || data.sheets[S.activeSheet] || data.sheets[0] || {};
-      return { headers: match.headers || [], rows: match.rows || [] };
-    }
-    if (data.rawB64) {
+      result = { headers: match.headers || [], rows: match.rows || [] };
+    } else if (data.rawB64) {
       // Server sent raw bytes — parse with SheetJS in browser
       const u8 = Uint8Array.from(atob(data.rawB64), ch => ch.charCodeAt(0));
       const wb  = XLSX.read(u8, { type: 'array', cellDates: true, cellStyles: true });
       const sheetName = wb.SheetNames.includes(preferredSheetName) ? preferredSheetName : (wb.SheetNames[S.activeSheet] || wb.SheetNames[0]);
       const ws  = wb.Sheets[sheetName];
-      if (!ws || !ws['!ref']) return { headers: [], rows: [] };
-      const range = XLSX.utils.decode_range(ws['!ref']);
-      const rows2d = [];
-      for (let r = range.s.r; r <= range.e.r; r++) {
-        const cells = [];
-        for (let c = range.s.c; c <= range.e.c; c++) {
-          const cell = ws[XLSX.utils.encode_cell({ r, c })];
-          if (!cell) { cells.push(''); continue; }
-          if (cell.t === 'b') cells.push(cell.v ? 'TRUE' : 'FALSE');
-          else if (cell.w != null) cells.push(cell.w);
-          else if (cell.v != null) cells.push(String(cell.v));
-          else cells.push('');
+      if (!ws || !ws['!ref']) result = { headers: [], rows: [] };
+      else {
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        const rows2d = [];
+        for (let r = range.s.r; r <= range.e.r; r++) {
+          const cells = [];
+          for (let c = range.s.c; c <= range.e.c; c++) {
+            const cell = ws[XLSX.utils.encode_cell({ r, c })];
+            if (!cell) { cells.push(''); continue; }
+            if (cell.t === 'b') cells.push(cell.v ? 'TRUE' : 'FALSE');
+            else if (cell.w != null) cells.push(cell.w);
+            else if (cell.v != null) cells.push(String(cell.v));
+            else cells.push('');
+          }
+          rows2d.push(cells);
         }
-        rows2d.push(cells);
+        while (rows2d.length && rows2d[rows2d.length-1].every(c => c==='')) rows2d.pop();
+        const split = splitSheetRows(rows2d, [], ws['!merges'] || []);
+        result = { headers: split.headers, rows: split.rows };
       }
-      while (rows2d.length && rows2d[rows2d.length-1].every(c => c==='')) rows2d.pop();
-      const split = splitSheetRows(rows2d, [], ws['!merges'] || []);
-      return { headers: split.headers, rows: split.rows };
+    } else {
+      result = { headers: data.headers || [], rows: data.rows || [] };
     }
-    return { headers: data.headers || [], rows: data.rows || [] };
+  } else {
+    result = parseCSV(data.content);
   }
-  return parseCSV(data.content);
+  if (cacheId) _parsedVersionCache.set(cacheId, result);
+  return result;
 }
 
 async function showDiff(sha, label) {
-  const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
+  const data = await fetchVersionDataCached(sha);
   if (data.error) { alert('Could not fetch version: ' + data.error); return; }
 
-  const { headers: commitH, rows: commitR } = _parseVersionData(data, currentSheetName());
+  const { headers: commitH, rows: commitR } = _parseVersionData(data, currentSheetName(), sha);
   _diffVersion = { sha, headers: commitH, rows: commitR };
 
   const { mapping, ghostRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
@@ -2641,7 +2570,7 @@ function loadVersionIntoEditor() {
 
 async function loadVersion(sha) {
   if (!confirm('Replace current data with this version? Unsaved changes will be lost.')) return;
-  const data = await fetch(`/api/github/version?sha=${sha}`).then(r => r.json());
+  const data = await fetchVersionDataCached(sha);
   if (data.error) { alert('Error: ' + data.error); return; }
   if (data.format === 'xlsx' && data.sheets?.length) {
     const sheets = data.sheets;
@@ -2751,7 +2680,7 @@ async function loadVersion(sha) {
     render();
     return;
   }
-  const { headers, rows } = _parseVersionData(data, currentSheetName());
+  const { headers, rows } = _parseVersionData(data, currentSheetName(), sha);
   S.headers = headers; S.rows = rows;
   _cellStyles = null;
   _sheetImages = [];
@@ -2813,10 +2742,19 @@ function computeDiff(oldR, newR) {
   const n = oldR.length, m = newR.length;
   // Normalize rows before keying: trim trailing empty cells and coerce null→''
   // so that ["A","B","",""] and ["A","B"] compare as equal (xlsx writers omit trailing empties)
-  const normRow = r => { const a = r.map(v => (v == null ? '' : String(v))); while (a.length && a[a.length-1] === '') a.pop(); return a; };
-  // Pre-compute keys once — avoids O(n×m) repeated JSON.stringify calls in the DP loop
-  const oldK = oldR.map(r => JSON.stringify(normRow(r)));
-  const newK = newR.map(r => JSON.stringify(normRow(r)));
+  const rowKey = r => {
+    let end = r.length;
+    while (end > 0 && (r[end - 1] == null || r[end - 1] === '')) end--;
+    let out = '';
+    for (let i = 0; i < end; i++) {
+      if (i) out += '\u001f';
+      out += r[i] == null ? '' : String(r[i]);
+    }
+    return out;
+  };
+  // Pre-compute keys once — cheaper than repeated deep row comparisons in the DP loop
+  const oldK = oldR.map(rowKey);
+  const newK = newR.map(rowKey);
   const dp = Array.from({length: n+1}, () => new Int32Array(m+1));
   for (let i = 1; i <= n; i++)
     for (let j = 1; j <= m; j++)
