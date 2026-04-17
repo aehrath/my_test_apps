@@ -1018,8 +1018,42 @@ async function buildFreshWorkbookBytes(allSheets) {
   const wb = new ExcelJS.Workbook();
   (allSheets || []).forEach(sh => {
     const ws = wb.addWorksheet(sh.name);
-    ws.addRow(sh.headers || []);
-    (sh.rows || []).forEach(r => ws.addRow(r.map(toXlsxCellValue)));
+    const headerIdx = Number.isFinite(Number(sh.headerRowIndex)) ? Number(sh.headerRowIndex) : 0;
+    const rows = sh.rows || [];
+    const totalRows = headerIdx < 0 ? rows.length : rows.length + 1;
+    for (let rowIdx = 0; rowIdx < totalRows; rowIdx++) {
+      const values = headerIdx >= 0 && rowIdx === headerIdx
+        ? (sh.headers || [])
+        : rows[headerIdx >= 0 && rowIdx > headerIdx ? rowIdx - 1 : rowIdx] || [];
+      const excelRow = ws.addRow(values.map(toXlsxCellValue));
+      values.forEach((_, colIdx) => {
+        const cell = excelRow.getCell(colIdx + 1);
+        const st = headerIdx >= 0 && rowIdx === headerIdx
+          ? sh.headerStyles?.[colIdx]
+          : sh.rowStyles?.[headerIdx >= 0 && rowIdx > headerIdx ? rowIdx - 1 : rowIdx]?.[colIdx];
+        if (!st) return;
+        if (st.bg) {
+          const argb = 'FF' + st.bg.replace('#', '').toUpperCase();
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb },
+            bgColor: { argb },
+          };
+        }
+        cell.font = {
+          ...cell.font,
+          bold: !!st.bold,
+          italic: !!st.italic,
+          size: st.fontSize || cell.font?.size,
+          name: st.fontFamily || cell.font?.name,
+          color: st.color ? { argb: 'FF' + st.color.replace('#', '').toUpperCase() } : cell.font?.color,
+        };
+        if (st.align) {
+          cell.alignment = { ...cell.alignment, horizontal: st.align };
+        }
+      });
+    }
   });
   return await wb.xlsx.writeBuffer();
 }
