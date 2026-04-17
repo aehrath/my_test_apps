@@ -535,6 +535,66 @@
     border-color: #2c3e50;
   }
   .modal-btns button.primary:hover { background: #3d5166; }
+  #modal-custom { display: none; }
+  .modal-help {
+    font-size: 12px;
+    color: #556677;
+    margin: 0 0 12px;
+  }
+  .color-palette-section { margin-bottom: 14px; }
+  .color-palette-section h4 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: #334455;
+  }
+  .color-palette-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 8px;
+  }
+  .color-palette-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 9px;
+    border: 1px solid #d0d7e0;
+    border-radius: 6px;
+    background: #f7f9fc;
+    cursor: pointer;
+    font-size: 12px;
+    user-select: none;
+  }
+  .color-palette-item:hover { background: #eef4fb; border-color: #b8c7d8; }
+  .color-palette-item input { margin: 0; }
+  .color-palette-swatch {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid rgba(0,0,0,.18);
+    flex-shrink: 0;
+  }
+  .color-palette-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .color-palette-hex {
+    font-family: monospace;
+    color: #223344;
+    white-space: nowrap;
+  }
+  .color-palette-count {
+    color: #667788;
+    font-size: 11px;
+  }
+  .color-palette-empty {
+    padding: 10px 12px;
+    border: 1px dashed #ccd5df;
+    border-radius: 6px;
+    background: #fafbfd;
+    color: #667788;
+    font-size: 12px;
+  }
 
 /* ── Sheet tabs ── */
 #sheet-tabs {
@@ -722,9 +782,10 @@
   <div id="modal-box">
     <h3 id="modal-title">Input</h3>
     <input type="text" id="modal-input">
+    <div id="modal-custom"></div>
     <div class="modal-btns">
-      <button onclick="modalCancel()">Cancel</button>
-      <button class="primary" onclick="modalOk()">OK</button>
+      <button id="modal-cancel-btn" onclick="modalCancel()">Cancel</button>
+      <button id="modal-ok-btn" class="primary" onclick="modalOk()">OK</button>
     </div>
   </div>
 </div>
@@ -1738,6 +1799,13 @@ function onCellKeyDown(e) {
 }
 
 function onKeyDown(e) {
+  if (document.getElementById('modal-overlay')?.classList.contains('open')) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      modalCancel();
+    }
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
     e.preventDefault();
     e.shiftKey ? saveAs() : saveFile();
@@ -1857,13 +1925,55 @@ function currentSelectionBackgroundHex() {
   return 'Mixed';
 }
 
+function collectSheetColorPalette() {
+  const palette = { bg: new Map(), color: new Map() };
+  const record = (prop, value) => {
+    const hex = _normalizeHexColor(value);
+    if (!hex) return;
+    palette[prop].set(hex, (palette[prop].get(hex) || 0) + 1);
+  };
+
+  (_cellStyles?.headerStyles || []).forEach(st => {
+    if (!st) return;
+    record('bg', st.bg);
+    record('color', st.color);
+  });
+  (_cellStyles?.rowStyles || []).forEach(row => {
+    (row || []).forEach(st => {
+      if (!st) return;
+      record('bg', st.bg);
+      record('color', st.color);
+    });
+  });
+
+  return {
+    bg: [...palette.bg.entries()].map(([hex, count]) => ({ hex, count })),
+    color: [...palette.color.entries()].map(([hex, count]) => ({ hex, count })),
+  };
+}
+
+function stripSelectedColors(st, targets) {
+  if (!st) return st;
+  const next = { ...st };
+  if (targets.bg.has(_normalizeHexColor(st.bg))) delete next.bg;
+  if (targets.color.has(_normalizeHexColor(st.color))) delete next.color;
+  return Object.keys(next).length ? next : null;
+}
+
 function clearSheetColors() {
   if (!_cellStyles) return;
-  if (!confirm('Clear fill and text colors on the current sheet?')) return;
-  if (_cellStyles.headerStyles) _cellStyles.headerStyles = _cellStyles.headerStyles.map(stripColorStyle);
-  if (_cellStyles.rowStyles) _cellStyles.rowStyles = _cellStyles.rowStyles.map(row => (row || []).map(stripColorStyle));
-  markModified();
-  render();
+  const palette = collectSheetColorPalette();
+  if (!palette.bg.length && !palette.color.length) {
+    alert('No fill or text colors were found on the current sheet.');
+    return;
+  }
+  showColorPaletteModal('Clear Sheet Colors', palette, selected => {
+    if (!selected.bg.size && !selected.color.size) return;
+    if (_cellStyles.headerStyles) _cellStyles.headerStyles = _cellStyles.headerStyles.map(st => stripSelectedColors(st, selected));
+    if (_cellStyles.rowStyles) _cellStyles.rowStyles = _cellStyles.rowStyles.map(row => (row || []).map(st => stripSelectedColors(st, selected)));
+    markModified();
+    render();
+  });
 }
 
 function duplicateSelection() {
@@ -2956,22 +3066,109 @@ function fmtDate(iso) {
 
 // ── Modal prompt ───────────────────────────────────────────────────────────
 let _modalResolve = null;
+let _modalSubmit = null;
+let _modalCancel = null;
 function prompt_(title, defaultVal, cb) {
+  resetModal();
   _modalResolve = cb;
   document.getElementById('modal-title').textContent = title;
   const inp = document.getElementById('modal-input');
+  document.getElementById('modal-custom').style.display = 'none';
+  inp.style.display = '';
   inp.value = defaultVal || '';
   document.getElementById('modal-overlay').classList.add('open');
   setTimeout(() => { inp.focus(); inp.select(); }, 50);
   inp.onkeydown = e => { if (e.key === 'Enter') modalOk(); else if (e.key === 'Escape') modalCancel(); };
+  _modalSubmit = () => {
+    const val = document.getElementById('modal-input').value;
+    closeModal();
+    if (_modalResolve) { _modalResolve(val); _modalResolve = null; }
+  };
 }
-function modalOk() {
-  const val = document.getElementById('modal-input').value;
+
+function resetModal() {
+  _modalSubmit = null;
+  _modalCancel = null;
+  const inp = document.getElementById('modal-input');
+  const custom = document.getElementById('modal-custom');
+  inp.onkeydown = null;
+  inp.style.display = '';
+  custom.innerHTML = '';
+  custom.style.display = 'none';
+  document.getElementById('modal-cancel-btn').textContent = 'Cancel';
+  document.getElementById('modal-ok-btn').textContent = 'OK';
+}
+
+function closeModal() {
   document.getElementById('modal-overlay').classList.remove('open');
-  if (_modalResolve) { _modalResolve(val); _modalResolve = null; }
+  resetModal();
+}
+
+function showColorPaletteModal(title, palette, cb) {
+  resetModal();
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-input').style.display = 'none';
+  const custom = document.getElementById('modal-custom');
+  custom.style.display = 'block';
+  custom.innerHTML = '<p class="modal-help">Choose the fill and/or text colors to remove from the current sheet.</p>';
+
+  const buildSection = (label, prop, items) => {
+    const section = document.createElement('div');
+    section.className = 'color-palette-section';
+    const heading = document.createElement('h4');
+    heading.textContent = label;
+    section.appendChild(heading);
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'color-palette-empty';
+      empty.textContent = `No ${label.toLowerCase()} found on this sheet.`;
+      section.appendChild(empty);
+      return section;
+    }
+    const grid = document.createElement('div');
+    grid.className = 'color-palette-grid';
+    items
+      .slice()
+      .sort((a, b) => b.count - a.count || a.hex.localeCompare(b.hex))
+      .forEach(({ hex, count }) => {
+        const item = document.createElement('label');
+        item.className = 'color-palette-item';
+        item.innerHTML = `
+          <input type="checkbox" data-color-prop="${prop}" value="${hex}">
+          <span class="color-palette-swatch" style="background:${hex}"></span>
+          <span class="color-palette-meta">
+            <span class="color-palette-hex">${hex}</span>
+            <span class="color-palette-count">${count} cell${count !== 1 ? 's' : ''}</span>
+          </span>`;
+        grid.appendChild(item);
+      });
+    section.appendChild(grid);
+    return section;
+  };
+
+  custom.appendChild(buildSection('Fill Colors', 'bg', palette.bg));
+  custom.appendChild(buildSection('Text Colors', 'color', palette.color));
+  document.getElementById('modal-ok-btn').textContent = 'Clear Selected';
+  document.getElementById('modal-overlay').classList.add('open');
+  setTimeout(() => {
+    custom.querySelector('input[type="checkbox"]')?.focus();
+  }, 0);
+  _modalSubmit = () => {
+    const chosen = { bg: new Set(), color: new Set() };
+    custom.querySelectorAll('input[type="checkbox"]:checked').forEach(input => {
+      chosen[input.dataset.colorProp].add(input.value);
+    });
+    closeModal();
+    cb(chosen);
+  };
+}
+
+function modalOk() {
+  if (_modalSubmit) _modalSubmit();
 }
 function modalCancel() {
-  document.getElementById('modal-overlay').classList.remove('open');
+  if (_modalCancel) _modalCancel();
+  closeModal();
   _modalResolve = null;
 }
 
