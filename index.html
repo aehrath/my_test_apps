@@ -593,10 +593,12 @@
   <div class="toolbar-menu" id="edit-menu">
     <button onclick="toggleEditMenu(event)">Edit ▾</button>
     <div class="toolbar-menu-panel">
-      <button onclick="menuAction(addRow)"><span>Add Row</span><span class="menu-shortcut">Ctrl/Cmd+Alt+R</span></button>
-      <button onclick="menuAction(deleteSelectedRow)"><span>Delete Row</span><span class="menu-shortcut">Ctrl/Cmd+Alt+Shift+R</span></button>
-      <button onclick="menuAction(addColumn)"><span>Add Column</span><span class="menu-shortcut">Ctrl/Cmd+Alt+C</span></button>
-      <button onclick="menuAction(deleteColumn)"><span>Delete Column</span><span class="menu-shortcut">Ctrl/Cmd+Alt+Shift+C</span></button>
+      <button onclick="menuAction(() => addRow(true))"><span>Insert Row Before</span><span class="menu-shortcut">Ctrl/Cmd+Alt+↑</span></button>
+      <button onclick="menuAction(addRow)"><span>Insert Row After</span><span class="menu-shortcut">Ctrl/Cmd+Alt+↓</span></button>
+      <button onclick="menuAction(deleteSelectedRow)"><span>Remove Row</span><span class="menu-shortcut">Ctrl/Cmd+Alt+Shift+R</span></button>
+      <button onclick="menuAction(() => addColumn(true))"><span>Insert Column Before</span><span class="menu-shortcut">Ctrl/Cmd+Alt+←</span></button>
+      <button onclick="menuAction(addColumn)"><span>Insert Column After</span><span class="menu-shortcut">Ctrl/Cmd+Alt+→</span></button>
+      <button onclick="menuAction(deleteColumn)"><span>Remove Column</span><span class="menu-shortcut">Ctrl/Cmd+Alt+Shift+C</span></button>
       <button onclick="menuAction(renameColumn)"><span>Rename Column</span><span class="menu-shortcut">F2</span></button>
       <button onclick="menuAction(duplicateSelection)"><span>Duplicate Selection</span><span class="menu-shortcut">Ctrl/Cmd+D</span></button>
       <button onclick="menuAction(mergeSelection)"><span>Merge Cells</span><span class="menu-shortcut">Ctrl/Cmd+Alt+M</span></button>
@@ -1745,9 +1747,11 @@ function onKeyDown(e) {
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); downloadFile('csv'); return; }
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j') { e.preventDefault(); downloadFile('json'); return; }
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'x') { e.preventDefault(); downloadFile('xlsx'); return; }
-  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); addRow(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key === 'ArrowUp') { e.preventDefault(); addRow(true); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key === 'ArrowDown') { e.preventDefault(); addRow(); return; }
   if ((e.metaKey || e.ctrlKey) && e.altKey && e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); deleteSelectedRow(); return; }
-  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); addColumn(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key === 'ArrowLeft') { e.preventDefault(); addColumn(true); return; }
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key === 'ArrowRight') { e.preventDefault(); addColumn(); return; }
   if ((e.metaKey || e.ctrlKey) && e.altKey && e.shiftKey && e.key.toLowerCase() === 'c') { e.preventDefault(); deleteColumn(); return; }
   if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.key.toLowerCase() === 'm') { e.preventDefault(); mergeSelection(); return; }
   if ((e.metaKey || e.ctrlKey) && e.altKey && e.shiftKey && e.key.toLowerCase() === 'm') { e.preventDefault(); unmergeSelection(); return; }
@@ -1904,8 +1908,10 @@ function duplicateSelection() {
   render();
 }
 
-function addRow() {
-  const insertAt = selectedRows.size > 0 ? Math.max(...selectedRows) + 1 : S.rows.length;
+function addRow(beforeCurrent = false) {
+  const insertAt = selectedRows.size > 0
+    ? (beforeCurrent ? Math.min(...selectedRows) : Math.max(...selectedRows) + 1)
+    : (beforeCurrent ? 0 : S.rows.length);
   S.rows.splice(insertAt, 0, Array(S.headers.length).fill(''));
   insertNullRowStyles(insertAt);
   shiftBodyMergesForRowInsert(insertAt);
@@ -1938,8 +1944,10 @@ function deleteSelectedRow() {
   updateStatus();
 }
 
-function addColumn() {
-  const insertAt = selectedCols.size > 0 ? Math.max(...selectedCols) + 1 : S.headers.length;
+function addColumn(beforeCurrent = false) {
+  const insertAt = selectedCols.size > 0
+    ? (beforeCurrent ? Math.min(...selectedCols) : Math.max(...selectedCols) + 1)
+    : (beforeCurrent ? 0 : S.headers.length);
   prompt_('New column name', '', name => {
     if (!name) return;
     S.headers.splice(insertAt, 0, name);
