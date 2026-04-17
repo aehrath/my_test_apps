@@ -265,7 +265,7 @@
   tbody td.cell-diff-changed input { background:transparent; color:inherit; }
   tbody td.cell-diff-changed input:focus { background:#ffff33; }
   tbody td.cell-diff-changed .old-val {
-    display:block; font-size:10px; color:#aaa; text-decoration:line-through;
+    display:block; font-size:calc(10px * var(--sheet-zoom)); color:#aaa; text-decoration:line-through;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     line-height:1.2; margin-bottom:1px; pointer-events:none;
   }
