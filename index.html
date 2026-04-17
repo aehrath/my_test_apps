@@ -611,6 +611,7 @@
   <button onclick="zoomOut()" title="Zoom out">− Zoom</button>
   <button onclick="zoomIn()" title="Zoom in">+ Zoom</button>
   <span id="zoom-display" style="font-size:11px;color:#aac;min-width:44px;text-align:center">100%</span>
+  <span id="bg-color-display" style="font-size:11px;color:#aac;min-width:132px;text-align:center">BG: None</span>
   <div class="sep"></div>
   <input id="search-input" type="text" placeholder="🔍 Search…" oninput="applySearch(this.value)">
   <button id="search-case-btn" class="search-toggle" onclick="toggleSearchCase()" title="Case sensitive on/off">Aa</button>
@@ -1814,6 +1815,48 @@ function cloneMerge(m) {
   return m ? { ...m } : null;
 }
 
+function _normalizeHexColor(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const shortHex = text.match(/^#([0-9a-f]{3})$/i);
+  if (shortHex) {
+    return '#' + shortHex[1].split('').map(ch => ch + ch).join('').toUpperCase();
+  }
+  const hex = text.match(/^#([0-9a-f]{6})$/i);
+  if (hex) return '#' + hex[1].toUpperCase();
+  const rgb = text.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*[\d.]+\s*)?\)$/i);
+  if (!rgb) return null;
+  const parts = rgb.slice(1, 4).map(n => Math.max(0, Math.min(255, Number(n))));
+  return '#' + parts.map(n => n.toString(16).padStart(2, '0').toUpperCase()).join('');
+}
+
+function currentSelectionBackgroundHex() {
+  const colors = new Set();
+  const selectedRowList = [...selectedRows];
+  const selectedColList = [...selectedCols];
+  const capture = (value) => {
+    const hex = _normalizeHexColor(value);
+    colors.add(hex || 'NONE');
+  };
+
+  if (!selectedRowList.length && !selectedColList.length) return 'None';
+
+  if (!selectedRowList.length) {
+    selectedColList.forEach(c => capture(_cellStyles?.headerStyles?.[c]?.bg));
+  } else {
+    selectedRowList.forEach(r => {
+      selectedColList.forEach(c => capture(_cellStyles?.rowStyles?.[r]?.[c]?.bg));
+    });
+  }
+
+  if (!colors.size) return 'None';
+  if (colors.size === 1) {
+    const only = [...colors][0];
+    return only === 'NONE' ? 'None' : only;
+  }
+  return 'Mixed';
+}
+
 function clearSheetColors() {
   if (!_cellStyles) return;
   if (!confirm('Clear fill and text colors on the current sheet?')) return;
@@ -2308,6 +2351,8 @@ function updateStatus() {
   const rightParts = [];
   if (searchTerm) rightParts.push(`${highlightCells.size} match${highlightCells.size !== 1 ? 'es' : ''}`);
   document.getElementById('status-right').textContent = rightParts.join(' · ');
+  const bgDisplay = document.getElementById('bg-color-display');
+  if (bgDisplay) bgDisplay.textContent = `BG: ${currentSelectionBackgroundHex()}`;
 }
 
 // ── GitHub panel ───────────────────────────────────────────────────────────
