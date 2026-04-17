@@ -2377,6 +2377,9 @@ function openFile() {
 }
 
 async function _buildXlsxBytes() {
+  if (_xlsxOrigBuf && !S.modified) {
+    return _xlsxOrigBuf.slice(0);
+  }
   // Flush active sheet edits to server first
   await syncNow();
   const all = await fetch('/api/all-sheets').then(r => r.json());
@@ -2389,8 +2392,10 @@ async function _buildXlsxBytes() {
     });
     if (res.ok) {
       const buf = await res.arrayBuffer();
-      if (workbookMatchesSheets(buf, all.sheets)) return buf;
-      console.warn('Template-based XLSX write mismatched sheet data; falling back to fresh workbook build.');
+      if (!workbookMatchesSheets(buf, all.sheets)) {
+        console.warn('Template-based XLSX write mismatched parsed sheet data; keeping template-preserving workbook to avoid dropping workbook features.');
+      }
+      return buf;
     } else {
       let err = 'template build failed';
       try { err = (await res.json()).error || err; } catch {}
