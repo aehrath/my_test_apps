@@ -326,6 +326,10 @@
     z-index: 0;
   }
   tbody tr.selected-row td.selected-col::after { background: rgba(80,140,255,.30); }
+  tbody td.cell-modified.selected-col::after { background: rgba(210, 214, 112, 0.22); }
+  tbody tr.selected-row td.cell-modified.selected-col::after { background: rgba(190, 196, 96, 0.34); }
+  tbody td.cell-diff-changed.selected-col::after { background: rgba(224, 226, 64, 0.24); }
+  tbody tr.selected-row td.cell-diff-changed.selected-col::after { background: rgba(206, 210, 54, 0.36); }
   tbody td > * {
     position: relative;
     z-index: 1;
@@ -2628,13 +2632,13 @@ function selectionClipboardPayload() {
   const rows = currentSelectionRows();
   const cols = currentSelectionCols();
   if (!rows.length || !cols.length) return null;
-  const values = rows.map(r => cols.map(c => String(S.rows?.[r]?.[c] ?? '')));
+  const text = selectionClipboardText();
   return {
     kind: 'body-cells',
     rows: rows.length,
     cols: cols.length,
-    text: selectionClipboardText(),
-    values,
+    text,
+    values: parseClipboardGrid(text),
     styles: rows.map(r => cols.map(c => clipboardStyleForCell(r, c))),
   };
 }
@@ -2745,6 +2749,7 @@ function applyPastedGrid(grid, styleGrid = null) {
   anchorCol = startCol;
   markModified();
   render();
+  applyBaselineDiff();
   return true;
 }
 
