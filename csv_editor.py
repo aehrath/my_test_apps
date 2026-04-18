@@ -344,6 +344,79 @@ def _propagate_consistent_column_alignment(rows2d, styles2d, header_idx):
             styles2d[row][col] = st
 
 
+def _sheet_row_to_body_row(sheet_row_idx, header_idx):
+    if header_idx is None or header_idx < 0:
+        return sheet_row_idx
+    if sheet_row_idx < header_idx:
+        return sheet_row_idx
+    if sheet_row_idx > header_idx:
+        return sheet_row_idx - 1
+    return None
+
+
+def _dxf_to_style(dxf, theme_colors):
+    if not dxf:
+        return None
+    st = {}
+    fill = getattr(dxf, 'fill', None)
+    if fill and getattr(fill, 'patternType', None) != 'none':
+        fg = _resolve_openpyxl_color(getattr(fill, 'fgColor', None), theme_colors)
+        bg_fallback = _resolve_openpyxl_color(getattr(fill, 'bgColor', None), theme_colors)
+        bg = bg_fallback if getattr(fill, 'patternType', None) in (None, '') else (fg or bg_fallback)
+        if bg == '#000000' and bg_fallback:
+            bg = bg_fallback
+        if bg:
+            st['bg'] = bg
+    font = getattr(dxf, 'font', None)
+    if font:
+        fc = _resolve_openpyxl_color(getattr(font, 'color', None), theme_colors)
+        if fc:
+            st['color'] = fc
+        if getattr(font, 'bold', False):
+            st['bold'] = True
+        if getattr(font, 'italic', False):
+            st['italic'] = True
+        if getattr(font, 'strike', False):
+            st['strike'] = True
+    return st or None
+
+
+def _parse_conditional_formats(ws, header_idx, theme_colors):
+    out = []
+    cf_rules = getattr(getattr(ws, 'conditional_formatting', None), '_cf_rules', {}) or {}
+    for sqref, rules in cf_rules.items():
+        try:
+            ranges = str(getattr(sqref, 'sqref', sqref)).split()
+        except Exception:
+            ranges = [str(sqref)]
+        for range_ref in ranges:
+            try:
+                min_col, min_row, max_col, max_row = openpyxl.utils.range_boundaries(range_ref)
+            except Exception:
+                continue
+            body_row_start = _sheet_row_to_body_row(min_row - 1, header_idx)
+            body_row_end = _sheet_row_to_body_row(max_row - 1, header_idx)
+            if body_row_start is None or body_row_end is None:
+                continue
+            for rule in rules:
+                if getattr(rule, 'type', None) != 'top10':
+                    continue
+                style = _dxf_to_style(getattr(rule, 'dxf', None), theme_colors)
+                if not style:
+                    continue
+                out.append({
+                    'type': 'top10',
+                    'bottom': bool(getattr(rule, 'bottom', False)),
+                    'rank': int(getattr(rule, 'rank', 10) or 10),
+                    'rowStart': body_row_start,
+                    'rowEnd': body_row_end,
+                    'colStart': min_col - 1,
+                    'colEnd': max_col - 1,
+                    'style': style,
+                })
+    return out
+
+
 def _parse_xlsx_sheets_with_styles(raw_bytes):
     if not _XLSX_OK:
         raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
@@ -448,6 +521,7 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             'images': image_map.get(ws.title, []),
             'headerRowIndex': header_idx_out,
             'columnWidths': col_widths,
+            'conditionalFormats': _parse_conditional_formats(ws, header_idx_out, theme_colors),
             'merges': _parse_sheet_merges(ws, header_idx_out),
         })
     return sheets

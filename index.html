@@ -10,7 +10,7 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
-    font-family: Calibri, Arial, sans-serif;
+    font-family: Calibri, Carlito, Arial, sans-serif;
     font-size: 13px;
     display: flex;
     flex-direction: column;
@@ -343,7 +343,8 @@
     border: 1px solid #dde;
     padding: 0;
     height: calc(28px * var(--sheet-zoom));
-    font-size: calc(15px * var(--sheet-zoom));
+    font-family: Calibri, Carlito, Arial, sans-serif;
+    font-size: calc(12pt * var(--sheet-zoom));
     position: relative;
     overflow: visible;
   }
@@ -694,7 +695,7 @@
   <div class="toolbar-menu" id="file-menu">
     <button onclick="toggleFileMenu(event)">File ▾</button>
     <div class="toolbar-menu-panel">
-      <button onclick="menuAction(newDocument)"><span>Create New Document</span><span class="menu-shortcut">Ctrl/Cmd+N</span></button>
+      <button onclick="menuAction(newDocument)"><span>New</span><span class="menu-shortcut">Ctrl/Cmd+N</span></button>
       <button onclick="menuAction(openFile)"><span>Open…</span><span class="menu-shortcut">Ctrl/Cmd+O</span></button>
       <button onclick="menuAction(saveFile)"><span>Save</span><span class="menu-shortcut">Ctrl/Cmd+S</span></button>
       <button onclick="menuAction(saveAs)"><span>Save As…</span><span class="menu-shortcut">Ctrl/Cmd+Shift+S</span></button>
@@ -931,6 +932,7 @@ let _cellStyles = null;      // { headerStyles: [], rowStyles: [] } for xlsx fil
 let _xlsxSheetOffsets = {};  // { sheetName: {rowOff, colOff} } — Excel row/col where sheet data starts (1-based)
 let _sheetImages = [];
 let _sheetMerges = [];
+let _conditionalFormats = [];
 let selectedRows = new Set();   // indices of selected rows
 let selectedCols = new Set();   // indices of selected columns
 let anchorRow = -1;             // shift-click anchor
@@ -1506,7 +1508,7 @@ function renderSheetImages() {
 function excelWidthToPixels(width) {
   const num = Number(width);
   if (!Number.isFinite(num) || num <= 0) return null;
-  return Math.round(num * 7 + 5);
+  return Math.round(num * 7 + 3);
 }
 
 function applyColumnPixelWidths(widths) {
@@ -1557,6 +1559,20 @@ function applySavedColumnWidths() {
   const pxWidths = S.headers.map((_, c) => excelWidthToPixels(widths[c]) || 96);
   applyColumnPixelWidths(pxWidths);
   return true;
+}
+
+function styleForMeasuredCell(rowIdx, colIdx) {
+  const baseStyle = bodyCellStyle(rowIdx, colIdx);
+  const conditionalStyle = conditionalStyleForCell(rowIdx, colIdx);
+  return conditionalStyle ? { ...(baseStyle || {}), ...conditionalStyle } : baseStyle;
+}
+
+function measureFontFromStyle(st, fallbackPx = 16, fallbackWeight = '400') {
+  const fontSizePx = st?.fontSize ? Math.round(st.fontSize * 96 / 72 * (_zoomPercent / 100)) : Math.round(fallbackPx * (_zoomPercent / 100));
+  const fontWeight = st?.bold ? '700' : fallbackWeight;
+  const fontStyle = st?.italic ? 'italic' : 'normal';
+  const fontFamily = st?.fontFamily ? `${st.fontFamily}, Carlito, Arial, sans-serif` : 'Calibri, Carlito, Arial, sans-serif';
+  return `${fontStyle} ${fontWeight} ${fontSizePx}px ${fontFamily}`;
 }
 
 function normalizedSheetMerges() {
@@ -1747,28 +1763,39 @@ function unmergeSelection() {
 // ── Auto-resize columns to fit content ─────────────────────────────────────
 const _measureCtx = document.createElement('canvas').getContext('2d'); // reused across calls
 function autoResize() {
-  if (applySavedColumnWidths()) return;
-  const PAD = 28, MIN = 60, MAX = 500;
+  const PAD = 18, MIN = 44, MAX = 500;
+  const NUMERIC_PAD = 10, NUMERIC_MIN = 30;
   const bodyMergeMap = buildMergeMaps('body');
   const headerMergeMap = buildMergeMaps('header');
   const scale = _zoomPercent / 100;
   const pxWidths = [];
 
   S.headers.forEach((header, c) => {
-    _measureCtx.font = 'bold 13px Arial';
+    const headerStyle = _cellStyles?.headerStyles?.[c] || null;
+    _measureCtx.font = measureFontFromStyle({ ...(headerStyle || {}), bold: true }, 13, '700');
     const headerMerge = headerMergeMap.starts.get(mergeKey('header', 0, c));
-    let maxPx = _measureCtx.measureText(header).width / (headerMerge?.colspan || 1);
+    const headerPx = _measureCtx.measureText(header).width / (headerMerge?.colspan || 1);
+    let maxPx = 0;
+    let sawBodyValue = false;
+    let sawNonNumericBodyValue = false;
 
-    _measureCtx.font = '13px Arial';
     for (let r = 0; r < S.rows.length; r++) {
       if (bodyMergeMap.covered.has(mergeKey('body', r, c))) continue;
       const merge = bodyMergeMap.starts.get(mergeKey('body', r, c));
       const span = merge?.colspan || 1;
-      const w = _measureCtx.measureText(S.rows[r]?.[c] ?? '').width / span;
+      const text = displayCellText(r, c);
+      if (!text) continue;
+      sawBodyValue = true;
+      if (numericCellValue(text) == null) sawNonNumericBodyValue = true;
+      _measureCtx.font = measureFontFromStyle(styleForMeasuredCell(r, c), 16, '400');
+      const w = _measureCtx.measureText(text).width / span;
       if (w > maxPx) maxPx = w;
     }
 
-    pxWidths.push(Math.max(MIN * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + PAD) * scale)) / scale);
+    if (!sawBodyValue) maxPx = headerPx;
+    const pad = sawBodyValue && !sawNonNumericBodyValue ? NUMERIC_PAD : PAD;
+    const min = sawBodyValue && !sawNonNumericBodyValue ? NUMERIC_MIN : MIN;
+    pxWidths.push(Math.max(min * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + pad) * scale)) / scale);
   });
   applyColumnPixelWidths(pxWidths);
 }
@@ -1983,14 +2010,44 @@ function applyExcelStyle(td, inp, st) {
   if (st.bold)       { td.style.fontWeight = 'bold';   if (inp) inp.style.fontWeight = 'bold'; }
   if (st.italic)     { td.style.fontStyle  = 'italic'; if (inp) inp.style.fontStyle  = 'italic'; }
   if (st.strike)     { td.style.textDecoration = 'line-through'; if (inp) inp.style.textDecoration = 'line-through'; }
-  if (st.fontFamily) { td.style.fontFamily = st.fontFamily; if (inp) inp.style.fontFamily = st.fontFamily; }
-  if (st.fontSize)   { const px = Math.round(st.fontSize * 1.33 * (_zoomPercent / 100)) + 'px'; td.style.fontSize = px; if (inp) inp.style.fontSize = px; }
+  if (st.fontFamily) { td.style.fontFamily = st.fontFamily + ', Carlito, Arial, sans-serif'; if (inp) inp.style.fontFamily = st.fontFamily + ', Carlito, Arial, sans-serif'; }
+  if (st.fontSize)   { const size = `calc(${st.fontSize}pt * var(--sheet-zoom))`; td.style.fontSize = size; if (inp) inp.style.fontSize = size; }
   if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
   else if (inp)      { inp.style.textAlign = td.style.textAlign || 'inherit'; }
 }
 
 function bodyCellStyle(rowIdx, colIdx) {
   return _cellStyles?.rowStyles?.[rowIdx]?.[colIdx] || null;
+}
+
+function numericCellValue(value) {
+  if (value == null || value === '') return null;
+  const num = Number(String(value).replace(/,/g, ''));
+  return Number.isFinite(num) ? num : null;
+}
+
+function conditionalStyleForCell(rowIdx, colIdx) {
+  if (!_conditionalFormats?.length) return null;
+  const merged = {};
+  _conditionalFormats.forEach(rule => {
+    if (rule.type !== 'top10') return;
+    if (rowIdx < rule.rowStart || rowIdx > rule.rowEnd || colIdx < rule.colStart || colIdx > rule.colEnd) return;
+    const cells = [];
+    for (let r = rule.rowStart; r <= rule.rowEnd; r++) {
+      for (let c = rule.colStart; c <= rule.colEnd; c++) {
+        const num = numericCellValue(S.rows?.[r]?.[c]);
+        if (num == null) continue;
+        cells.push({ r, c, num });
+      }
+    }
+    if (!cells.length) return;
+    cells.sort((a, b) => rule.bottom ? a.num - b.num : b.num - a.num);
+    const rank = Math.max(1, Math.min(rule.rank || 10, cells.length));
+    const winners = new Set(cells.slice(0, rank).map(cell => `${cell.r},${cell.c}`));
+    if (!winners.has(`${rowIdx},${colIdx}`)) return;
+    Object.assign(merged, rule.style || {});
+  });
+  return Object.keys(merged).length ? merged : null;
 }
 
 function canSpillDisplayIntoNextCell(rowIdx, colIdx) {
@@ -2135,7 +2192,9 @@ function renderRows() {
         }
       }
 
-      const st = _cellStyles?.rowStyles?.[r]?.[c];
+      const baseStyle = _cellStyles?.rowStyles?.[r]?.[c];
+      const conditionalStyle = conditionalStyleForCell(r, c);
+      const st = conditionalStyle ? { ...(baseStyle || {}), ...conditionalStyle } : baseStyle;
       const align = st?.align || td.style.textAlign || '';
       const syncDisplayLayer = () => {
         const displayText = displayCellText(r, c);
@@ -2840,11 +2899,13 @@ function openFile() {
         _cellStyles = { headerStyles: sheets[0].headerStyles || [], rowStyles: sheets[0].rowStyles || [] };
         _sheetImages = sheets[0].images || [];
         _sheetMerges = sheets[0].merges || [];
+        _conditionalFormats = sheets[0].conditionalFormats || [];
         S.columnWidths = sheets[0].columnWidths || [];
       } else {
         _cellStyles = null;
         _sheetImages = [];
         _sheetMerges = [];
+        _conditionalFormats = [];
         S.columnWidths = [];
       }
       setBaseline(S.headers, S.rows);
@@ -3350,6 +3411,7 @@ async function loadVersion(sha) {
     };
     _sheetImages = activeSheet.images || [];
     _sheetMerges = activeSheet.merges || [];
+    _conditionalFormats = activeSheet.conditionalFormats || [];
     setBaseline(S.headers, S.rows);
     resetColumnFilters();
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
@@ -3408,6 +3470,7 @@ async function loadVersion(sha) {
     };
     _sheetImages = activeSheet.images || [];
     _sheetMerges = activeSheet.merges || [];
+    _conditionalFormats = activeSheet.conditionalFormats || [];
     setBaseline(S.headers, S.rows);
     resetColumnFilters();
     selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
@@ -3424,6 +3487,7 @@ async function loadVersion(sha) {
   _cellStyles = null;
   _sheetImages = [];
   _sheetMerges = [];
+  _conditionalFormats = [];
   setBaseline(headers, rows);
   resetColumnFilters();
   selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
@@ -3784,6 +3848,7 @@ async function switchSheet(idx) {
   _cellStyles = activeSh ? { headerStyles: activeSh.headerStyles || [], rowStyles: activeSh.rowStyles || [] } : null;
   _sheetImages = activeSh?.images || [];
   _sheetMerges = activeSh?.merges || [];
+  _conditionalFormats = activeSh?.conditionalFormats || [];
   S.columnWidths = activeSh?.columnWidths || S.columnWidths || [];
   setBaseline(S.headers, S.rows);
   resetColumnFilters();
