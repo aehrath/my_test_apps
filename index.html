@@ -339,7 +339,7 @@
     padding: 0;
     height: calc(20px * var(--sheet-zoom));
     font-family: Calibri, Carlito, Arial, sans-serif;
-    font-size: calc(11px * var(--sheet-zoom));
+    font-size: calc(12px * var(--sheet-zoom));
     position: relative;
     overflow: visible;
     -webkit-font-smoothing: subpixel-antialiased;
@@ -1769,7 +1769,7 @@ function autoResize() {
 
   S.headers.forEach((header, c) => {
     const headerStyle = _cellStyles?.headerStyles?.[c] || null;
-    _measureCtx.font = measureFontFromStyle({ ...(headerStyle || {}), bold: true }, 11, '700');
+    _measureCtx.font = measureFontFromStyle({ ...(headerStyle || {}), bold: true }, 12, '700');
     const headerMerge = headerMergeMap.starts.get(mergeKey('header', 0, c));
     const headerPx = _measureCtx.measureText(header).width / (headerMerge?.colspan || 1);
     let maxPx = 0;
@@ -1784,7 +1784,7 @@ function autoResize() {
       if (!text) continue;
       sawBodyValue = true;
       if (numericCellValue(text) == null) sawNonNumericBodyValue = true;
-      _measureCtx.font = measureFontFromStyle(styleForMeasuredCell(r, c), 11, '400');
+      _measureCtx.font = measureFontFromStyle(styleForMeasuredCell(r, c), 12, '400');
       const w = _measureCtx.measureText(text).width / span;
       if (w > maxPx) maxPx = w;
     }
