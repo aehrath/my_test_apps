@@ -2603,17 +2603,51 @@ function ensureBodyCellStyles() {
   );
 }
 
+function clipboardStyleForCell(r, c) {
+  const style = cloneStyleCell(_cellStyles?.rowStyles?.[r]?.[c] || null) || {};
+  const td = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`)?.closest('td');
+  const inp = td?.querySelector('input');
+  const bg = _normalizeHexColor(td?.style.backgroundColor || td?.style.background);
+  const color = _normalizeHexColor(inp?.style.color || td?.style.color);
+  const align = inp?.style.textAlign || td?.style.textAlign || '';
+  const fontWeight = td?.style.fontWeight || inp?.style.fontWeight || '';
+  const fontStyle = td?.style.fontStyle || inp?.style.fontStyle || '';
+  const textDecoration = td?.style.textDecoration || inp?.style.textDecoration || '';
+
+  if (bg) style.bg = bg;
+  if (color) style.color = color;
+  if (align && align !== 'inherit') style.align = align;
+  if (fontWeight === 'bold' || Number(fontWeight) >= 600) style.bold = true;
+  if (fontStyle === 'italic') style.italic = true;
+  if (textDecoration.includes('line-through')) style.strike = true;
+
+  return Object.keys(style).length ? style : null;
+}
+
 function selectionClipboardPayload() {
   const rows = currentSelectionRows();
   const cols = currentSelectionCols();
   if (!rows.length || !cols.length) return null;
+  const values = rows.map(r => cols.map(c => String(S.rows?.[r]?.[c] ?? '')));
   return {
     kind: 'body-cells',
     rows: rows.length,
     cols: cols.length,
     text: selectionClipboardText(),
-    styles: rows.map(r => cols.map(c => cloneStyleCell(_cellStyles?.rowStyles?.[r]?.[c] || null))),
+    values,
+    styles: rows.map(r => cols.map(c => clipboardStyleForCell(r, c))),
   };
+}
+
+function gridsEqual(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let r = 0; r < a.length; r++) {
+    if (!Array.isArray(a[r]) || !Array.isArray(b[r]) || a[r].length !== b[r].length) return false;
+    for (let c = 0; c < a[r].length; c++) {
+      if (String(a[r][c] ?? '') !== String(b[r][c] ?? '')) return false;
+    }
+  }
+  return true;
 }
 
 function parseDelimitedText(text, delimiter) {
@@ -2735,18 +2769,23 @@ function onPaste(e) {
   const grid = parseClipboardGrid(text);
   if (!grid.length) return;
   let styleGrid = null;
+  const payloadMatchesGrid = payload =>
+    payload?.kind === 'body-cells'
+    && Array.isArray(payload.styles)
+    && (
+      payload.text === text
+      || gridsEqual(payload.values, grid)
+    );
   const rawPayload = e.clipboardData?.getData(INTERNAL_CLIPBOARD_MIME) ?? '';
   if (rawPayload) {
     try {
       const payload = JSON.parse(rawPayload);
-      if (payload?.kind === 'body-cells' && Array.isArray(payload.styles) && payload.text === text) {
+      if (payloadMatchesGrid(payload)) {
         styleGrid = payload.styles;
       }
     } catch {}
   }
-  if (!styleGrid && _internalClipboardPayload?.kind === 'body-cells'
-      && Array.isArray(_internalClipboardPayload.styles)
-      && _internalClipboardPayload.text === text) {
+  if (!styleGrid && payloadMatchesGrid(_internalClipboardPayload)) {
     styleGrid = _internalClipboardPayload.styles;
   }
   if (!applyPastedGrid(grid, styleGrid)) return;
