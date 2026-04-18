@@ -153,6 +153,27 @@ def _cell_to_str(value):
         return value.strftime('%Y-%m-%d')
     return str(value)
 
+
+def _cell_to_str_formatted(value, number_format):
+    """Convert a cell value to string, respecting the Excel number format."""
+    # Dates/datetimes are already formatted by type in _cell_to_str
+    if value is None or isinstance(value, bool) or isinstance(value, (_dt.date, _dt.datetime)):
+        return _cell_to_str(value)
+    if not isinstance(value, (int, float)):
+        return _cell_to_str(value)
+    fmt = number_format or 'General'
+    if fmt in ('General', '@', ''):
+        return _cell_to_str(value)
+    # Use the first segment of compound formats (e.g. positive;negative;zero)
+    fmt_part = fmt.split(';')[0]
+    is_pct = '%' in fmt_part
+    num = float(value) * 100 if is_pct else float(value)
+    # Count decimal places: digits after the first '.' in the format
+    m = _re.search(r'\.([0#]+)', fmt_part)
+    dp = len(m.group(1)) if m else 0
+    result = f'{num:.{dp}f}' if dp > 0 else str(int(round(num)))
+    return result + '%' if is_pct else result
+
 _INT_RE  = _re.compile(r'^-?\d+$')
 _FLOAT_RE = _re.compile(r'^-?\d+\.?\d*([eE][+-]?\d+)?$')
 
@@ -448,7 +469,7 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             row_styles = []
             for c in range(1, max_col + 1):
                 cell = ws.cell(r, c)
-                row_vals.append(_cell_to_str(cell.value))
+                row_vals.append(_cell_to_str_formatted(cell.value, cell.number_format))
                 st = {}
                 fill = cell.fill
                 font = cell.font

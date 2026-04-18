@@ -342,11 +342,14 @@
   tbody td {
     border: 1px solid #dde;
     padding: 0;
-    height: calc(28px * var(--sheet-zoom));
+    height: calc(20px * var(--sheet-zoom));
     font-family: Calibri, Carlito, Arial, sans-serif;
-    font-size: calc(12pt * var(--sheet-zoom));
+    font-size: calc(11pt * var(--sheet-zoom));
     position: relative;
     overflow: visible;
+    -webkit-font-smoothing: subpixel-antialiased;
+    -moz-osx-font-smoothing: auto;
+    text-rendering: geometricPrecision;
   }
   #csv-table col.row-num-col { width: calc(42px * var(--sheet-zoom)); }
   tbody td.row-num {
@@ -365,9 +368,9 @@
     height: 100%;
     border: none;
     background: transparent;
-    padding: calc(4px * var(--sheet-zoom)) calc(8px * var(--sheet-zoom));
+    padding: calc(2px * var(--sheet-zoom)) calc(3px * var(--sheet-zoom));
     box-sizing: border-box;
-    line-height: calc(20px * var(--sheet-zoom));
+    line-height: calc(16px * var(--sheet-zoom));
     font-family: inherit;
     font-size: inherit;
     color: #222;
@@ -380,9 +383,9 @@
     left: 0;
     top: 0;
     height: 100%;
-    padding: calc(4px * var(--sheet-zoom)) calc(8px * var(--sheet-zoom));
+    padding: calc(2px * var(--sheet-zoom)) calc(3px * var(--sheet-zoom));
     box-sizing: border-box;
-    line-height: calc(20px * var(--sheet-zoom));
+    line-height: calc(16px * var(--sheet-zoom));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: clip;
@@ -929,6 +932,7 @@ let S = { headers: [], rows: [], headerRowIndex: 0, columnWidths: [], filepath: 
 let _xlsxWb = null;          // ExcelJS workbook for style-preserving save
 let _xlsxOrigBuf = null;     // original ArrayBuffer — reload ExcelJS lazily if load failed
 let _cellStyles = null;      // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
+let _colPxWidths = [];       // current rendered column pixel widths, set by applyColumnPixelWidths
 let _xlsxSheetOffsets = {};  // { sheetName: {rowOff, colOff} } — Excel row/col where sheet data starts (1-based)
 let _sheetImages = [];
 let _sheetMerges = [];
@@ -1423,10 +1427,10 @@ async function parseXlsxBuffer(buf) {
 // ── Rendering ──────────────────────────────────────────────────────────────
 function render() {
   renderHeaders();
+  autoResize();
   renderRows();
   renderSheetImages();
   updateStatus();
-  autoResize();
   renderSheetTabs();
 }
 
@@ -1481,7 +1485,7 @@ function renderSheetImages() {
 
   const topBar = document.getElementById('excel-col-row');
   const table = document.getElementById('csv-table');
-  const rowHeight = Math.round(28 * (_zoomPercent / 100));
+  const rowHeight = Math.round(20 * (_zoomPercent / 100));
   const topBarHeight = topBar && !topBar.classList.contains('hidden-row') ? topBar.getBoundingClientRect().height : 0;
   const tableLeft = table ? table.getBoundingClientRect().left : 0;
   const ths = [...document.querySelectorAll('#header-row th')].slice(1);
@@ -1508,11 +1512,13 @@ function renderSheetImages() {
 function excelWidthToPixels(width) {
   const num = Number(width);
   if (!Number.isFinite(num) || num <= 0) return null;
-  return Math.round(num * 7 + 3);
+  return Math.round(num * 7 + 5);
 }
 
 function applyColumnPixelWidths(widths) {
   const scale = _zoomPercent / 100;
+  // Store scaled pixel widths so displaySpillWidth can use the real rendered values
+  _colPxWidths = widths.map(px => Math.round(px * scale));
   const ths = document.querySelectorAll('#header-row th');
   const excelThs = document.querySelectorAll('#excel-col-row th');
   const colgroup = document.getElementById('table-colgroup');
@@ -1556,7 +1562,8 @@ function applyColumnPixelWidths(widths) {
 function applySavedColumnWidths() {
   const widths = Array.isArray(S.columnWidths) ? S.columnWidths : [];
   if (!widths.length) return false;
-  const pxWidths = S.headers.map((_, c) => excelWidthToPixels(widths[c]) || 96);
+  const defaultPx = excelWidthToPixels(8.43); // Excel's default column width in character units
+  const pxWidths = S.headers.map((_, c) => excelWidthToPixels(widths[c]) || defaultPx);
   applyColumnPixelWidths(pxWidths);
   return true;
 }
@@ -1787,15 +1794,22 @@ function autoResize() {
       if (!text) continue;
       sawBodyValue = true;
       if (numericCellValue(text) == null) sawNonNumericBodyValue = true;
-      _measureCtx.font = measureFontFromStyle(styleForMeasuredCell(r, c), 16, '400');
+      _measureCtx.font = measureFontFromStyle(styleForMeasuredCell(r, c), 15, '400');
       const w = _measureCtx.measureText(text).width / span;
       if (w > maxPx) maxPx = w;
     }
 
     if (!sawBodyValue) maxPx = headerPx;
-    const pad = sawBodyValue && !sawNonNumericBodyValue ? NUMERIC_PAD : PAD;
-    const min = sawBodyValue && !sawNonNumericBodyValue ? NUMERIC_MIN : MIN;
-    pxWidths.push(Math.max(min * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + pad) * scale)) / scale);
+    const storedPx = excelWidthToPixels(S.columnWidths?.[c]);
+    if (storedPx !== null) {
+      // Explicit Excel width: use exactly as stored.
+      pxWidths.push(storedPx);
+    } else {
+      // No stored width (e.g. CSV or column without explicit width): auto-fit content.
+      const pad = sawBodyValue && !sawNonNumericBodyValue ? NUMERIC_PAD : PAD;
+      const min = sawBodyValue && !sawNonNumericBodyValue ? NUMERIC_MIN : MIN;
+      pxWidths.push(Math.max(min * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + pad) * scale)) / scale);
+    }
   });
   applyColumnPixelWidths(pxWidths);
 }
@@ -2061,15 +2075,14 @@ function canSpillDisplayIntoNextCell(rowIdx, colIdx) {
 }
 
 function displaySpillWidth(rowIdx, colIdx, colSpan) {
+  const defaultPx = excelWidthToPixels(8.43);
   let width = 0;
   for (let i = 0; i < colSpan; i++) {
-    const px = excelWidthToPixels(S.columnWidths?.[colIdx + i]);
-    width += px || 96;
+    width += _colPxWidths[colIdx + i] || defaultPx;
   }
   let nextCol = colIdx + colSpan;
   while (canSpillDisplayIntoNextCell(rowIdx, nextCol - 1)) {
-    const px = excelWidthToPixels(S.columnWidths?.[nextCol]);
-    width += px || 96;
+    width += _colPxWidths[nextCol] || defaultPx;
     nextCol += 1;
   }
   return width;
@@ -2173,9 +2186,11 @@ function renderRows() {
       inp.dataset.c = c;
       let displayLayer = null;
 
-      // Baseline (unsaved-edit) highlight
+      // Baseline (unsaved-edit) highlight — compare raw stored value, not display value,
+      // so formula cells (which display their result) aren't falsely flagged as modified.
       const bv0 = baselineVal(r, c);
-      if (bv0 === undefined || inp.value !== bv0) td.classList.add('cell-modified');
+      const rawVal0 = String(getRawCellValue(r, c) ?? '');
+      if (bv0 === undefined || rawVal0 !== bv0) td.classList.add('cell-modified');
 
       // Inline diff: show commit value in yellow, strike through current value
       let oldValLabel = null;
@@ -3164,7 +3179,7 @@ function baselineVal(r, c) {
   if (c >= baseline.headers.length) return undefined;  // column didn't exist in baseline
   const br = baseline.rows[r];
   if (!br) return undefined;                            // row didn't exist in baseline
-  return br[c] ?? '';
+  return String(br[c] ?? '');
 }
 
 // Scan every visible input and set/clear the cell-modified class
@@ -3172,8 +3187,9 @@ function applyBaselineDiff() {
   document.querySelectorAll('#table-body input[data-r]').forEach(inp => {
     const r = +inp.dataset.r, c = +inp.dataset.c;
     const bv = baselineVal(r, c);
+    const rawV = String(S.rows?.[r]?.[c] ?? '');
     inp.closest('td').classList.toggle('cell-modified',
-      bv === undefined || inp.value !== bv);
+      bv === undefined || rawV !== bv);
   });
 }
 
