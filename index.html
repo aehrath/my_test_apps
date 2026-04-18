@@ -1467,7 +1467,7 @@ async function parseXlsxBuffer(buf) {
 // ── Rendering ──────────────────────────────────────────────────────────────
 function render() {
   renderHeaders();
-  autoResize();
+  autoResize(true);
   renderRows();
   renderSheetImages();
   updateSelectionUI();
@@ -1490,7 +1490,7 @@ function applyZoom() {
   const label = document.getElementById('zoom-display');
   document.documentElement.style.setProperty('--sheet-zoom', String(_zoomPercent / 100));
   if (label) label.textContent = `${_zoomPercent}%`;
-  autoResize();
+  autoResize(true);
 }
 
 function setZoom(next) {
@@ -1553,6 +1553,12 @@ function excelWidthToPixels(width) {
   const num = Number(width);
   if (!Number.isFinite(num) || num <= 0) return null;
   return Math.round(num * 7 + 5);
+}
+
+function pixelsToExcelWidth(px) {
+  const num = Number(px);
+  if (!Number.isFinite(num) || num <= 5) return null;
+  return Math.max(0.1, (num - 5) / 7);
 }
 
 function applyColumnPixelWidths(widths) {
@@ -1804,7 +1810,7 @@ function unmergeSelection() {
 
 // ── Auto-resize columns to fit content ─────────────────────────────────────
 const _measureCtx = document.createElement('canvas').getContext('2d'); // reused across calls
-function autoResize() {
+function autoResize(preserveStoredWidths = false) {
   const PAD = 18, MIN = 44, MAX = 500;
   const NUMERIC_PAD = 10, NUMERIC_MIN = 30;
   const bodyMergeMap = buildMergeMaps('body');
@@ -1836,7 +1842,7 @@ function autoResize() {
 
     if (!sawBodyValue) maxPx = headerPx;
     const storedPx = excelWidthToPixels(S.columnWidths?.[c]);
-    if (storedPx !== null) {
+    if (preserveStoredWidths && storedPx !== null) {
       pxWidths.push(storedPx);
     } else {
       // No stored width: auto-fit content with normal padding.
@@ -1845,6 +1851,10 @@ function autoResize() {
       pxWidths.push(Math.max(min * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + pad) * scale)) / scale);
     }
   });
+  if (!preserveStoredWidths) {
+    S.columnWidths = pxWidths.map(px => pixelsToExcelWidth(px));
+    markModified();
+  }
   applyColumnPixelWidths(pxWidths);
 }
 
