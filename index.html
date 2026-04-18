@@ -1653,9 +1653,9 @@ function applySavedColumnWidths() {
   return true;
 }
 
-function styleForMeasuredCell(rowIdx, colIdx) {
+function styleForMeasuredCell(rowIdx, colIdx, conditionalStyles = null) {
   const baseStyle = bodyCellStyle(rowIdx, colIdx);
-  const conditionalStyle = conditionalStyleForCell(rowIdx, colIdx);
+  const conditionalStyle = conditionalStyleForCell(rowIdx, colIdx, conditionalStyles);
   return conditionalStyle ? { ...(baseStyle || {}), ...conditionalStyle } : baseStyle;
 }
 
@@ -1675,10 +1675,10 @@ function mergeKey(area, row, col) {
   return `${area}:${row}:${col}`;
 }
 
-function buildMergeMaps(area) {
+function buildMergeMaps(area, merges = null) {
   const starts = new Map();
   const covered = new Set();
-  normalizedSheetMerges()
+  (merges || normalizedSheetMerges())
     .filter(m => m.area === area && m.rowspan > 0 && m.colspan > 0)
     .forEach(m => {
       starts.set(mergeKey(area, m.row, m.col), m);
@@ -1852,8 +1852,10 @@ const _measureCtx = document.createElement('canvas').getContext('2d'); // reused
 function autoResize(preserveStoredWidths = false) {
   const PAD = 18, MIN = 44, MAX = 500;
   const NUMERIC_PAD = 10, NUMERIC_MIN = 30;
-  const bodyMergeMap = buildMergeMaps('body');
-  const headerMergeMap = buildMergeMaps('header');
+  const merges = normalizedSheetMerges();
+  const bodyMergeMap = buildMergeMaps('body', merges);
+  const headerMergeMap = buildMergeMaps('header', merges);
+  const conditionalStyles = buildConditionalStyleLookup();
   const scale = _zoomPercent / 100;
   const pxWidths = [];
 
@@ -1872,9 +1874,9 @@ function autoResize(preserveStoredWidths = false) {
       const span = merge?.colspan || 1;
       const text = displayCellText(r, c);
       if (!text) continue;
-      const measuredStyle = styleForMeasuredCell(r, c);
+      const measuredStyle = styleForMeasuredCell(r, c, conditionalStyles);
       const align = measuredStyle?.align || '';
-      if (span === 1 && align !== 'right' && align !== 'center' && canSpillDisplayIntoNextCell(r, c)) continue;
+      if (span === 1 && align !== 'right' && align !== 'center' && canSpillDisplayIntoNextCell(r, c, bodyMergeMap, merges)) continue;
       sawBodyValue = true;
       if (numericCellValue(text) == null) sawNonNumericBodyValue = true;
       _measureCtx.font = measureFontFromStyle(measuredStyle, 12, '400');
@@ -2139,12 +2141,11 @@ function numericCellValue(value) {
   return Number.isFinite(num) ? num : null;
 }
 
-function conditionalStyleForCell(rowIdx, colIdx) {
+function buildConditionalStyleLookup() {
   if (!_conditionalFormats?.length) return null;
-  const merged = {};
+  const lookup = new Map();
   _conditionalFormats.forEach(rule => {
     if (rule.type !== 'top10') return;
-    if (rowIdx < rule.rowStart || rowIdx > rule.rowEnd || colIdx < rule.colStart || colIdx > rule.colEnd) return;
     const cells = [];
     for (let r = rule.rowStart; r <= rule.rowEnd; r++) {
       for (let c = rule.colStart; c <= rule.colEnd; c++) {
@@ -2156,11 +2157,22 @@ function conditionalStyleForCell(rowIdx, colIdx) {
     if (!cells.length) return;
     cells.sort((a, b) => rule.bottom ? a.num - b.num : b.num - a.num);
     const rank = Math.max(1, Math.min(rule.rank || 10, cells.length));
-    const winners = new Set(cells.slice(0, rank).map(cell => `${cell.r},${cell.c}`));
-    if (!winners.has(`${rowIdx},${colIdx}`)) return;
-    Object.assign(merged, rule.style || {});
+    cells.slice(0, rank).forEach(cell => {
+      const key = `${cell.r},${cell.c}`;
+      const merged = lookup.get(key) || {};
+      Object.assign(merged, rule.style || {});
+      lookup.set(key, merged);
+    });
   });
-  return Object.keys(merged).length ? merged : null;
+  return lookup;
+}
+
+function conditionalStyleForCell(rowIdx, colIdx, conditionalStyles = null) {
+  if (!conditionalStyles) {
+    conditionalStyles = buildConditionalStyleLookup();
+    if (!conditionalStyles) return null;
+  }
+  return conditionalStyles.get(`${rowIdx},${colIdx}`) || null;
 }
 
 function canSpillHeaderIntoNextCell(colIdx) {
@@ -2182,24 +2194,26 @@ function headerSpillWidth(colIdx, span) {
   return width;
 }
 
-function canSpillDisplayIntoNextCell(rowIdx, colIdx) {
+function canSpillDisplayIntoNextCell(rowIdx, colIdx, bodyMergeMap = null, merges = null) {
   if (colIdx + 1 >= S.headers.length) return false;
-  if (normalizedSheetMerges().some(m => m.area === 'body' && m.row === rowIdx && m.col === colIdx && m.colspan > 1)) return false;
+  merges = merges || normalizedSheetMerges();
+  bodyMergeMap = bodyMergeMap || buildMergeMaps('body', merges);
+  if (merges.some(m => m.area === 'body' && m.row === rowIdx && m.col === colIdx && m.colspan > 1)) return false;
   const nextVal = displayCellText(rowIdx, colIdx + 1);
   if (nextVal !== '') return false;
-  if (buildMergeMaps('body').covered.has(mergeKey('body', rowIdx, colIdx + 1))) return false;
-  if (buildMergeMaps('body').starts.has(mergeKey('body', rowIdx, colIdx + 1))) return false;
+  if (bodyMergeMap.covered.has(mergeKey('body', rowIdx, colIdx + 1))) return false;
+  if (bodyMergeMap.starts.has(mergeKey('body', rowIdx, colIdx + 1))) return false;
   return true;
 }
 
-function displaySpillWidth(rowIdx, colIdx, colSpan) {
+function displaySpillWidth(rowIdx, colIdx, colSpan, bodyMergeMap = null, merges = null) {
   const defaultPx = excelWidthToPixels(8.43);
   let width = 0;
   for (let i = 0; i < colSpan; i++) {
     width += _colPxWidths[colIdx + i] || defaultPx;
   }
   let nextCol = colIdx + colSpan;
-  while (canSpillDisplayIntoNextCell(rowIdx, nextCol - 1)) {
+  while (canSpillDisplayIntoNextCell(rowIdx, nextCol - 1, bodyMergeMap, merges)) {
     width += _colPxWidths[nextCol] || defaultPx;
     nextCol += 1;
   }
@@ -2209,8 +2223,10 @@ function displaySpillWidth(rowIdx, colIdx, colSpan) {
 function renderRows() {
   const tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
-  const mergeMap = buildMergeMaps('body');
-  const headerMergeMap = buildMergeMaps('header');
+  const merges = normalizedSheetMerges();
+  const mergeMap = buildMergeMaps('body', merges);
+  const headerMergeMap = buildMergeMaps('header', merges);
+  const conditionalStyles = buildConditionalStyleLookup();
   const visibleRows = getFilteredRowIndexes();
   const headerIdx = sheetHeaderRowIndex();
   const frag = document.createDocumentFragment();
@@ -2334,7 +2350,7 @@ function renderRows() {
       }
 
       const baseStyle = _cellStyles?.rowStyles?.[r]?.[c];
-      const conditionalStyle = conditionalStyleForCell(r, c);
+      const conditionalStyle = conditionalStyleForCell(r, c, conditionalStyles);
       const st = conditionalStyle ? { ...(baseStyle || {}), ...conditionalStyle } : baseStyle;
       const syncDisplayLayer = () => {
         const align = st?.align || td.style.textAlign || '';
@@ -2355,7 +2371,7 @@ function renderRows() {
           else td.appendChild(displayLayer);
         }
         displayLayer.textContent = displayText;
-        displayLayer.style.width = displaySpillWidth(r, c, colSpan) + 'px';
+        displayLayer.style.width = displaySpillWidth(r, c, colSpan, mergeMap, merges) + 'px';
         td.classList.add('has-display-overlay');
       };
       td.addEventListener('mousedown', (e) => {
