@@ -1026,6 +1026,7 @@ let searchWholeWord = false;
 let _zoomPercent = 100;
 let _columnFilters = {};
 let _headerFilterState = null;
+let _tableScrollRaf = 0;
 const _versionDataCache = new Map();
 const _parsedVersionCache = new Map();
 
@@ -1500,6 +1501,7 @@ async function parseXlsxBuffer(buf) {
   document.addEventListener('paste', onPaste);
   document.addEventListener('click', closeMenus);
   document.addEventListener('mouseup', endCellDragSelection);
+  document.getElementById('table-wrap')?.addEventListener('scroll', onTableScroll, { passive: true });
   window.addEventListener('blur', endCellDragSelection);
 })();
 
@@ -2220,6 +2222,43 @@ function displaySpillWidth(rowIdx, colIdx, colSpan, bodyMergeMap = null, merges 
   return width;
 }
 
+function estimatedBodyRowHeight() {
+  const sample = document.querySelector('#table-body tr td:not(.row-num)');
+  const measured = sample?.getBoundingClientRect?.().height;
+  if (measured && Number.isFinite(measured) && measured > 0) return measured;
+  return Math.max(22, Math.round(22 * (_zoomPercent / 100)));
+}
+
+function shouldVirtualizeRows(visibleRows, merges) {
+  return false;
+}
+
+function createVirtualSpacerRow(height, colCount) {
+  const tr = document.createElement('tr');
+  tr.className = 'virtual-spacer';
+  const td = document.createElement('td');
+  td.colSpan = colCount;
+  td.style.height = `${Math.max(0, Math.round(height))}px`;
+  td.style.padding = '0';
+  td.style.border = 'none';
+  td.style.background = 'transparent';
+  td.style.pointerEvents = 'none';
+  tr.appendChild(td);
+  return tr;
+}
+
+function onTableScroll() {
+  if (_tableScrollRaf) return;
+  _tableScrollRaf = requestAnimationFrame(() => {
+    _tableScrollRaf = 0;
+    const merges = normalizedSheetMerges();
+    const visibleRows = getFilteredRowIndexes();
+    if (!shouldVirtualizeRows(visibleRows, merges)) return;
+    renderRows();
+    updateSelectionUI();
+  });
+}
+
 function renderRows() {
   const tbody = document.getElementById('table-body');
   tbody.innerHTML = '';
@@ -2229,6 +2268,8 @@ function renderRows() {
   const conditionalStyles = buildConditionalStyleLookup();
   const visibleRows = getFilteredRowIndexes();
   const headerIdx = sheetHeaderRowIndex();
+  const virtualized = shouldVirtualizeRows(visibleRows, merges);
+  const rowHeight = estimatedBodyRowHeight();
   const frag = document.createDocumentFragment();
 
   // Index incoming (new-in-commit) rows by the current-row index they appear before
@@ -2281,15 +2322,39 @@ function renderRows() {
     frag.appendChild(tr);
   }
 
+  const displayItems = [];
   let insertedHeader = headerIdx < 0;
-  if (headerIdx !== 0) insertIncoming(0);
-
+  if (!_inlineDiff && headerIdx !== 0) {
+    // no-op for non-diff view; kept aligned with existing insertion semantics
+  }
   visibleRows.forEach((r, visibleIdx) => {
     if (!insertedHeader && r >= headerIdx) {
-      insertSheetHeaderRow();
+      displayItems.push({ type: 'sheet-header' });
       insertedHeader = true;
-      insertIncoming(headerIdx);
     }
+    displayItems.push({ type: 'row', r, visibleIdx });
+  });
+  if (!insertedHeader) displayItems.push({ type: 'sheet-header' });
+
+  let startItem = 0;
+  let endItem = displayItems.length;
+  if (virtualized) {
+    const wrap = document.getElementById('table-wrap');
+    const buffer = 12;
+    const scrollTop = wrap?.scrollTop || 0;
+    const viewportHeight = wrap?.clientHeight || 0;
+    startItem = Math.max(0, Math.floor(scrollTop / rowHeight) - buffer);
+    endItem = Math.min(displayItems.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + buffer);
+    if (startItem > 0) frag.appendChild(createVirtualSpacerRow(startItem * rowHeight, S.headers.length + 1));
+  }
+
+  displayItems.slice(startItem, endItem).forEach(item => {
+    if (item.type === 'sheet-header') {
+      insertSheetHeaderRow();
+      if (_inlineDiff && !virtualized) insertIncoming(headerIdx);
+      return;
+    }
+    const { r, visibleIdx } = item;
     const row = S.rows[r];
     const entry = _inlineDiff ? (_inlineDiff.mapping[r] ?? { type: 'added' }) : null;
     const tr = document.createElement('tr');
@@ -2436,11 +2501,10 @@ function renderRows() {
     });
 
     frag.appendChild(tr);
-    if (insertedHeader || r + 1 !== headerIdx) insertIncoming(r + 1);
+    if (_inlineDiff && !virtualized && r + 1 !== headerIdx) insertIncoming(r + 1);
   });
-  if (!insertedHeader) {
-    insertSheetHeaderRow();
-    insertIncoming(headerIdx);
+  if (virtualized && endItem < displayItems.length) {
+    frag.appendChild(createVirtualSpacerRow((displayItems.length - endItem) * rowHeight, S.headers.length + 1));
   }
   tbody.appendChild(frag);
 }
@@ -2527,7 +2591,6 @@ function selectCell(r, c, e) {
 }
 
 function updateSelectionUI() {
-  // Rows
   document.querySelectorAll('#table-body tr').forEach(tr =>
     tr.classList.toggle('selected-row', selectedRows.has(+(tr.dataset.rowIndex || -1))));
   document.querySelectorAll('[data-col-start]').forEach(el => {
