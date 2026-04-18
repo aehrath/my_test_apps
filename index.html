@@ -464,7 +464,14 @@
   tbody td.highlight input:focus { background: #ffe060; }
 
   /* cells that differ from the last-committed / last-loaded baseline */
-  tbody td.cell-modified { background: #fff3b0 !important; }
+  tbody td.cell-modified::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 243, 176, 0.72);
+    pointer-events: none;
+    z-index: 0;
+  }
   tbody td.cell-modified input { background: transparent; }
   tbody td.cell-modified input:focus { background: #fff0a0; }
 
@@ -480,7 +487,14 @@
   tbody tr.row-diff-added > td { background:#efffef !important; }   /* locally added */
   tbody tr.row-diff-ghost > td { background:#f8f8f8 !important; color:#bbb; pointer-events:none; }  /* deleted locally, exists in commit */
   tbody tr.row-diff-ghost > td.row-num { color:#ddd; }
-  tbody td.cell-diff-changed { background:#ffff00 !important; }
+  tbody td.cell-diff-changed::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 0, 0.7);
+    pointer-events: none;
+    z-index: 0;
+  }
   tbody td.cell-diff-changed input { background:transparent; color:inherit; }
   tbody td.cell-diff-changed input:focus { background:#ffff33; }
   tbody td.cell-diff-changed .old-val {
