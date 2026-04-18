@@ -975,6 +975,7 @@ let selectedCols = new Set();   // indices of selected columns
 let anchorRow = -1;             // shift-click anchor
 let anchorCol = -1;
 let _pendingMouseEvent = null;  // mousedown captured before focus fires
+let _dragSelection = null;      // { startR, startC } while dragging a cell range
 let _activeCell = { r: -1, c: -1 };  // selected-but-not-editing cell
 let _editingOriginalValue = null;     // value before edit started, for Escape cancel
 let sortCol = -1;
@@ -1457,6 +1458,8 @@ async function parseXlsxBuffer(buf) {
   render();
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('click', closeMenus);
+  document.addEventListener('mouseup', endCellDragSelection);
+  window.addEventListener('blur', endCellDragSelection);
 })();
 
 // ── Rendering ──────────────────────────────────────────────────────────────
@@ -2314,7 +2317,12 @@ function renderRows() {
           // keep _activeCell at original anchor for multi-select
         } else {
           setActiveCell(r, c);
+          beginCellDragSelection(r, c);
         }
+      });
+      td.addEventListener('mouseenter', (e) => {
+        if (!_dragSelection || td.classList.contains('editing') || (e.buttons & 1) !== 1) return;
+        updateCellDragSelection(r, c);
       });
       td.addEventListener('dblclick', () => {
         enterEditMode(r, c);
@@ -2383,6 +2391,21 @@ function _applyRange(set, anchor, target, max) {
   set.clear();
   const lo = Math.min(anchor, target), hi = Math.max(anchor, target);
   for (let i = lo; i <= hi; i++) set.add(i);
+}
+
+function beginCellDragSelection(r, c) {
+  _dragSelection = { startR: r, startC: c };
+}
+
+function updateCellDragSelection(r, c) {
+  if (!_dragSelection) return;
+  _applyRange(selectedRows, _dragSelection.startR, r, S.rows.length - 1);
+  _applyRange(selectedCols, _dragSelection.startC, c, S.headers.length - 1);
+  updateSelectionUI();
+}
+
+function endCellDragSelection() {
+  _dragSelection = null;
 }
 
 function selectRow(r, e) {
