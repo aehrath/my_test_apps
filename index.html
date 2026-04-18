@@ -317,7 +317,19 @@
   tbody tr.sheet-header-row:hover { background: #c8d8ee; }
 
   thead th.selected-col { background: #a8c4e8; }
-  tbody td.selected-col { background: rgba(100,160,255,.10); }
+  tbody td.selected-col::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(100,160,255,.10);
+    pointer-events: none;
+    z-index: 0;
+  }
+  tbody tr.selected-row td.selected-col::after { background: rgba(80,140,255,.30); }
+  tbody td > * {
+    position: relative;
+    z-index: 1;
+  }
   tbody td.active-cell { z-index: 1; }
   tbody td.selected-cell { z-index: 1; }
   tbody td.selection-top    { box-shadow: inset 0 2px 0 #1a73e8; }
@@ -357,7 +369,6 @@
   tbody td.selection-top.selection-bottom.selection-left.selection-right {
     box-shadow: inset 0 2px 0 #1a73e8, inset 0 -2px 0 #1a73e8, inset 2px 0 0 #1a73e8, inset -2px 0 0 #1a73e8;
   }
-  tbody tr.selected-row td.selected-col { background: rgba(80,140,255,.30) !important; }
   tbody tr.sheet-header-row td {
     background: #dce8f7;
     border: 1px solid #b8cfe8;
@@ -978,6 +989,8 @@ let _pendingMouseEvent = null;  // mousedown captured before focus fires
 let _dragSelection = null;      // { startR, startC } while dragging a cell range
 let _activeCell = { r: -1, c: -1 };  // selected-but-not-editing cell
 let _editingOriginalValue = null;     // value before edit started, for Escape cancel
+const INTERNAL_CLIPBOARD_MIME = 'application/x-csv-editor-cells';
+let _internalClipboardPayload = null;
 let sortCol = -1;
 let sortAsc = true;
 let searchTerm = '';
@@ -2559,6 +2572,28 @@ function selectionClipboardText() {
   ).join('\n');
 }
 
+function ensureBodyCellStyles() {
+  if (_cellStyles?.rowStyles) return;
+  _cellStyles = _cellStyles || {};
+  _cellStyles.headerStyles = _cellStyles.headerStyles || Array(S.headers.length).fill(null);
+  _cellStyles.rowStyles = Array.from({ length: S.rows.length }, (_, r) =>
+    Array.from({ length: S.headers.length }, (_, c) => _cellStyles.rowStyles?.[r]?.[c] || null)
+  );
+}
+
+function selectionClipboardPayload() {
+  const rows = currentSelectionRows();
+  const cols = currentSelectionCols();
+  if (!rows.length || !cols.length) return null;
+  return {
+    kind: 'body-cells',
+    rows: rows.length,
+    cols: cols.length,
+    text: selectionClipboardText(),
+    styles: rows.map(r => cols.map(c => cloneStyleCell(_cellStyles?.rowStyles?.[r]?.[c] || null))),
+  };
+}
+
 function parseDelimitedText(text, delimiter) {
   text = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const rows = [];
@@ -2608,7 +2643,7 @@ function parseClipboardGrid(text) {
   return [[String(text).replace(/\r/g, '')]];
 }
 
-function applyPastedGrid(grid) {
+function applyPastedGrid(grid, styleGrid = null) {
   if (!grid.length || !S.rows.length || !S.headers.length) return false;
   const start = currentSelectionStart();
   if (!start) return false;
@@ -2632,6 +2667,19 @@ function applyPastedGrid(grid) {
   });
   if (!changed) return false;
 
+  if (styleGrid) {
+    ensureBodyCellStyles();
+    styleGrid.forEach((row, rowOffset) => {
+      const r = startRow + rowOffset;
+      if (r >= S.rows.length) return;
+      row.forEach((style, colOffset) => {
+        const c = startCol + colOffset;
+        if (c >= S.headers.length) return;
+        _cellStyles.rowStyles[r][c] = cloneStyleCell(style);
+      });
+    });
+  }
+
   _activeCell = { r: startRow, c: startCol };
   selectedRows = new Set();
   selectedCols = new Set();
@@ -2650,8 +2698,11 @@ function onCopy(e) {
   if (isEditingCell || document.getElementById('modal-overlay')?.classList.contains('open')) return;
   const text = selectionClipboardText();
   if (!text) return;
+  const payload = selectionClipboardPayload();
+  _internalClipboardPayload = payload;
   e.preventDefault();
   e.clipboardData?.setData('text/plain', text);
+  if (payload) e.clipboardData?.setData(INTERNAL_CLIPBOARD_MIME, JSON.stringify(payload));
 }
 
 function onPaste(e) {
@@ -2661,7 +2712,22 @@ function onPaste(e) {
   const text = e.clipboardData?.getData('text/plain') ?? '';
   const grid = parseClipboardGrid(text);
   if (!grid.length) return;
-  if (!applyPastedGrid(grid)) return;
+  let styleGrid = null;
+  const rawPayload = e.clipboardData?.getData(INTERNAL_CLIPBOARD_MIME) ?? '';
+  if (rawPayload) {
+    try {
+      const payload = JSON.parse(rawPayload);
+      if (payload?.kind === 'body-cells' && Array.isArray(payload.styles) && payload.text === text) {
+        styleGrid = payload.styles;
+      }
+    } catch {}
+  }
+  if (!styleGrid && _internalClipboardPayload?.kind === 'body-cells'
+      && Array.isArray(_internalClipboardPayload.styles)
+      && _internalClipboardPayload.text === text) {
+    styleGrid = _internalClipboardPayload.styles;
+  }
+  if (!applyPastedGrid(grid, styleGrid)) return;
   e.preventDefault();
 }
 
