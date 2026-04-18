@@ -2792,9 +2792,16 @@ function onKeyDown(e) {
   }
 
   // Cell navigation / edit entry when a cell is selected but not being edited
-  const _isEditingCell = document.activeElement?.tagName === 'INPUT'
-    && !!document.activeElement.closest('#table-body');
-  if (!_isEditingCell && _activeCell.r >= 0) {
+  const activeEl = document.activeElement;
+  const isEditableControl = !!activeEl && (
+    activeEl.tagName === 'INPUT'
+    || activeEl.tagName === 'TEXTAREA'
+    || activeEl.tagName === 'SELECT'
+    || activeEl.isContentEditable
+  );
+  const _isEditingCell = isEditableControl && !!activeEl.closest('#table-body');
+  const isEditingOutsideGrid = isEditableControl && !_isEditingCell;
+  if (!isEditingOutsideGrid && !_isEditingCell && _activeCell.r >= 0) {
     const { r, c } = _activeCell;
     const rows = S.rows.length, cols = S.headers.length;
     if (e.key === 'ArrowDown' && !e.altKey && !e.metaKey && !e.ctrlKey) {
