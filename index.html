@@ -1833,9 +1833,12 @@ function autoResize(preserveStoredWidths = false) {
       const span = merge?.colspan || 1;
       const text = displayCellText(r, c);
       if (!text) continue;
+      const measuredStyle = styleForMeasuredCell(r, c);
+      const align = measuredStyle?.align || '';
+      if (span === 1 && align !== 'right' && align !== 'center' && canSpillDisplayIntoNextCell(r, c)) continue;
       sawBodyValue = true;
       if (numericCellValue(text) == null) sawNonNumericBodyValue = true;
-      _measureCtx.font = measureFontFromStyle(styleForMeasuredCell(r, c), 12, '400');
+      _measureCtx.font = measureFontFromStyle(measuredStyle, 12, '400');
       const w = _measureCtx.measureText(text).width / span;
       if (w > maxPx) maxPx = w;
     }
