@@ -342,9 +342,8 @@
     font-size: calc(12px * var(--sheet-zoom));
     position: relative;
     overflow: visible;
-    -webkit-font-smoothing: subpixel-antialiased;
-    -moz-osx-font-smoothing: auto;
-    text-rendering: geometricPrecision;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   #csv-table col.row-num-col { width: calc(42px * var(--sheet-zoom)); }
   tbody td.row-num {
@@ -392,10 +391,10 @@
     background: transparent;
   }
   tbody td.has-display-overlay input {
-    color: transparent;
+    color: transparent !important;
   }
   tbody td.has-display-overlay input::selection {
-    color: transparent;
+    color: transparent !important;
     background: rgba(74, 144, 217, 0.25);
   }
   tbody td.editing .cell-display,
@@ -403,7 +402,7 @@
     display: none;
   }
   tbody td.editing input {
-    color: inherit;
+    color: inherit !important;
   }
   tbody td input:focus {
     background: #e8f0fe;
