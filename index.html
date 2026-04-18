@@ -2224,8 +2224,8 @@ function renderRows() {
       const baseStyle = _cellStyles?.rowStyles?.[r]?.[c];
       const conditionalStyle = conditionalStyleForCell(r, c);
       const st = conditionalStyle ? { ...(baseStyle || {}), ...conditionalStyle } : baseStyle;
-      const align = st?.align || td.style.textAlign || '';
       const syncDisplayLayer = () => {
+        const align = st?.align || td.style.textAlign || '';
         const displayText = displayCellText(r, c);
         const shouldOverlay = !!displayText && !oldValLabel && colSpan === 1 && align !== 'right' && align !== 'center';
         if (!shouldOverlay) {
@@ -2246,8 +2246,6 @@ function renderRows() {
         displayLayer.style.width = displaySpillWidth(r, c, colSpan) + 'px';
         td.classList.add('has-display-overlay');
       };
-      syncDisplayLayer();
-
       td.addEventListener('mousedown', (e) => { _pendingMouseEvent = e; });
       inp.addEventListener('focus', () => {
         selectCell(r, c, _pendingMouseEvent);
@@ -2284,6 +2282,7 @@ function renderRows() {
         td.style.textAlign = 'right';
         inp.style.textAlign = 'right';
       }
+      syncDisplayLayer();
     });
 
     frag.appendChild(tr);
