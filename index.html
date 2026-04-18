@@ -1457,6 +1457,8 @@ async function parseXlsxBuffer(buf) {
   updateSearchButtons();
   render();
   document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('copy', onCopy);
+  document.addEventListener('paste', onPaste);
   document.addEventListener('click', closeMenus);
   document.addEventListener('mouseup', endCellDragSelection);
   window.addEventListener('blur', endCellDragSelection);
@@ -2503,6 +2505,151 @@ function updateSelectionUI() {
   document.querySelector('.active-cell')?.classList.remove('active-cell');
   activeInput?.closest('td')?.classList.add('active-cell');
   updateStatus();
+}
+
+function sortedSelectionIndexes(set) {
+  return [...set].sort((a, b) => a - b);
+}
+
+function currentSelectionRows() {
+  if (selectedRows.size) return sortedSelectionIndexes(selectedRows);
+  return _activeCell.r >= 0 ? [_activeCell.r] : [];
+}
+
+function currentSelectionCols() {
+  if (selectedCols.size) return sortedSelectionIndexes(selectedCols);
+  return _activeCell.c >= 0 ? [_activeCell.c] : [];
+}
+
+function currentSelectionStart() {
+  const rows = currentSelectionRows();
+  const cols = currentSelectionCols();
+  if (!rows.length || !cols.length) return null;
+  const activeR = _activeCell.r;
+  const activeC = _activeCell.c;
+  const hasActive = activeR >= 0 && activeC >= 0
+    && rows.includes(activeR) && cols.includes(activeC);
+  return { r: hasActive ? activeR : rows[0], c: hasActive ? activeC : cols[0], rows, cols };
+}
+
+function escapeClipboardCell(value) {
+  const text = String(value ?? '');
+  return /["\t\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function selectionClipboardText() {
+  const rows = currentSelectionRows();
+  const cols = currentSelectionCols();
+  if (!rows.length || !cols.length) return '';
+  return rows.map(r =>
+    cols.map(c => escapeClipboardCell(S.rows?.[r]?.[c] ?? '')).join('\t')
+  ).join('\n');
+}
+
+function parseDelimitedText(text, delimiter) {
+  text = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const rows = [];
+  let i = 0;
+  while (i < text.length) {
+    const row = [];
+    while (i <= text.length) {
+      let cell = '';
+      if (i < text.length && text[i] === '"') {
+        i++;
+        while (i < text.length) {
+          if (text[i] === '"') {
+            if (text[i + 1] === '"') { cell += '"'; i += 2; }
+            else { i++; break; }
+          } else {
+            cell += text[i++];
+          }
+        }
+      } else {
+        while (i < text.length && text[i] !== delimiter && text[i] !== '\n') cell += text[i++];
+      }
+      row.push(cell);
+      if (i >= text.length || text[i] === '\n') { i++; break; }
+      i++;
+    }
+    rows.push(row);
+  }
+  while (rows.length && rows[rows.length - 1].every(c => c === '')) rows.pop();
+  return rows;
+}
+
+function parseClipboardGrid(text) {
+  if (text == null || text === '') return [];
+  if (text.includes('\t')) return parseDelimitedText(text, '\t');
+  if (/[\r\n]/.test(text) && text.includes(',')) {
+    const parsed = parseCSV(text);
+    return [parsed.headers, ...parsed.rows];
+  }
+  if (/[\r\n]/.test(text)) {
+    return String(text)
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .split('\n')
+      .filter((row, idx, rows) => row !== '' || idx < rows.length - 1)
+      .map(row => [row]);
+  }
+  return [[String(text).replace(/\r/g, '')]];
+}
+
+function applyPastedGrid(grid) {
+  if (!grid.length || !S.rows.length || !S.headers.length) return false;
+  const start = currentSelectionStart();
+  if (!start) return false;
+  const startRow = start.r;
+  const startCol = start.c;
+  let maxRow = startRow;
+  let maxCol = startCol;
+  let changed = false;
+
+  grid.forEach((row, rowOffset) => {
+    const r = startRow + rowOffset;
+    if (r >= S.rows.length) return;
+    row.forEach((value, colOffset) => {
+      const c = startCol + colOffset;
+      if (c >= S.headers.length) return;
+      S.rows[r][c] = value;
+      maxRow = Math.max(maxRow, r);
+      maxCol = Math.max(maxCol, c);
+      changed = true;
+    });
+  });
+  if (!changed) return false;
+
+  _activeCell = { r: startRow, c: startCol };
+  selectedRows = new Set();
+  selectedCols = new Set();
+  _applyRange(selectedRows, startRow, maxRow, S.rows.length - 1);
+  _applyRange(selectedCols, startCol, maxCol, S.headers.length - 1);
+  anchorRow = startRow;
+  anchorCol = startCol;
+  markModified();
+  render();
+  return true;
+}
+
+function onCopy(e) {
+  const isEditingCell = document.activeElement?.tagName === 'INPUT'
+    && !!document.activeElement.closest('#table-body');
+  if (isEditingCell || document.getElementById('modal-overlay')?.classList.contains('open')) return;
+  const text = selectionClipboardText();
+  if (!text) return;
+  e.preventDefault();
+  e.clipboardData?.setData('text/plain', text);
+}
+
+function onPaste(e) {
+  const isEditingCell = document.activeElement?.tagName === 'INPUT'
+    && !!document.activeElement.closest('#table-body');
+  if (isEditingCell || document.getElementById('modal-overlay')?.classList.contains('open')) return;
+  const text = e.clipboardData?.getData('text/plain') ?? '';
+  const grid = parseClipboardGrid(text);
+  if (!grid.length) return;
+  if (!applyPastedGrid(grid)) return;
+  e.preventDefault();
 }
 
 // ── Keyboard navigation ────────────────────────────────────────────────────
