@@ -161,16 +161,13 @@
   .header-cell {
     display: flex;
     align-items: center;
-    gap: calc(6px * var(--sheet-zoom));
+    justify-content: flex-end;
     width: 100%;
+    height: 100%;
     min-width: 0;
-  }
-  .header-cell-label {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    position: relative;
+    z-index: 3;
+    pointer-events: none;
   }
   .header-filter-btn {
     flex: 0 0 auto;
@@ -184,6 +181,7 @@
     line-height: 1;
     cursor: pointer;
     padding: 0;
+    pointer-events: auto;
   }
   .header-filter-btn:hover { background: rgba(255,255,255,.8); }
   .header-filter-btn.active {
@@ -325,9 +323,6 @@
     background: #dce8f7;
     border: 1px solid #b8cfe8;
     font-weight: 700;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     user-select: none;
   }
   tbody tr.sheet-header-row td.selected-col { background: #a8c4e8; }
@@ -1631,13 +1626,8 @@ function createHeaderCellContent(cell, colIdx, span) {
   cell.dataset.colSpan = String(span);
   if (span > 1) cell.colSpan = span;
   if (colSelectionOverlaps(colIdx, span)) cell.classList.add('selected-col');
-  const arrow = sortCol === colIdx ? (sortAsc ? ' ▲' : ' ▼') : '';
   const wrap = document.createElement('div');
   wrap.className = 'header-cell';
-  const label = document.createElement('span');
-  label.className = 'header-cell-label';
-  label.textContent = S.headers[colIdx] + arrow;
-  wrap.appendChild(label);
   const filterBtn = document.createElement('button');
   filterBtn.type = 'button';
   filterBtn.className = 'header-filter-btn' + (isColumnFiltered(colIdx) ? ' active' : '');
@@ -1650,7 +1640,7 @@ function createHeaderCellContent(cell, colIdx, span) {
   };
   wrap.appendChild(filterBtn);
   cell.appendChild(wrap);
-  label.onclick = (e) => {
+  cell.onclick = (e) => {
     if (span > 1 && !(e.shiftKey || e.metaKey || e.ctrlKey)) {
       selectedCols = new Set(Array.from({ length: span }, (_, off) => colIdx + off));
       anchorCol = colIdx;
@@ -1802,10 +1792,9 @@ function autoResize() {
     if (!sawBodyValue) maxPx = headerPx;
     const storedPx = excelWidthToPixels(S.columnWidths?.[c]);
     if (storedPx !== null) {
-      // Explicit Excel width: use exactly as stored.
       pxWidths.push(storedPx);
     } else {
-      // No stored width (e.g. CSV or column without explicit width): auto-fit content.
+      // No stored width: auto-fit content with normal padding.
       const pad = sawBodyValue && !sawNonNumericBodyValue ? NUMERIC_PAD : PAD;
       const min = sawBodyValue && !sawNonNumericBodyValue ? NUMERIC_MIN : MIN;
       pxWidths.push(Math.max(min * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + pad) * scale)) / scale);
@@ -2064,6 +2053,25 @@ function conditionalStyleForCell(rowIdx, colIdx) {
   return Object.keys(merged).length ? merged : null;
 }
 
+function canSpillHeaderIntoNextCell(colIdx) {
+  if (colIdx + 1 >= S.headers.length) return false;
+  return !S.headers[colIdx + 1];
+}
+
+function headerSpillWidth(colIdx, span) {
+  const defaultPx = excelWidthToPixels(8.43);
+  let width = 0;
+  for (let i = 0; i < span; i++) {
+    width += _colPxWidths[colIdx + i] || defaultPx;
+  }
+  let nextCol = colIdx + span;
+  while (canSpillHeaderIntoNextCell(nextCol - 1)) {
+    width += _colPxWidths[nextCol] || defaultPx;
+    nextCol += 1;
+  }
+  return width;
+}
+
 function canSpillDisplayIntoNextCell(rowIdx, colIdx) {
   if (colIdx + 1 >= S.headers.length) return false;
   if (normalizedSheetMerges().some(m => m.area === 'body' && m.row === rowIdx && m.col === colIdx && m.colspan > 1)) return false;
@@ -2136,6 +2144,12 @@ function renderRows() {
       const merge = headerMergeMap.starts.get(mergeKey('header', 0, c));
       const span = merge?.colspan || 1;
       createHeaderCellContent(td, c, span);
+      const headerOverlay = document.createElement('div');
+      headerOverlay.className = 'cell-display';
+      const arrow = sortCol === c ? (sortAsc ? ' ▲' : ' ▼') : '';
+      headerOverlay.textContent = S.headers[c] + arrow;
+      headerOverlay.style.width = headerSpillWidth(c, span) + 'px';
+      td.appendChild(headerOverlay);
       tr.appendChild(td);
     });
     frag.appendChild(tr);
