@@ -652,10 +652,11 @@
 </head>
 <body>
 
-<div id="toolbar">
+  <div id="toolbar">
   <div class="toolbar-menu" id="file-menu">
     <button onclick="toggleFileMenu(event)">File ▾</button>
     <div class="toolbar-menu-panel">
+      <button onclick="menuAction(newDocument)"><span>Create New Document</span><span class="menu-shortcut">Ctrl/Cmd+N</span></button>
       <button onclick="menuAction(openFile)"><span>Open…</span><span class="menu-shortcut">Ctrl/Cmd+O</span></button>
       <button onclick="menuAction(saveFile)"><span>Save</span><span class="menu-shortcut">Ctrl/Cmd+S</span></button>
       <button onclick="menuAction(saveAs)"><span>Save As…</span><span class="menu-shortcut">Ctrl/Cmd+Shift+S</span></button>
@@ -956,6 +957,13 @@ function normalizeSheetRows(rows) {
   });
 }
 
+function explicitHeaderIndexFromWorksheet(ws) {
+  const ref = ws?.['!autofilter']?.ref;
+  if (!ref) return null;
+  const range = XLSX.utils.decode_range(ref);
+  return range?.s?.r ?? null;
+}
+
 function readSheetFromWorkbook(wb, sheetName) {
   const ws = wb.Sheets[sheetName];
   if (!ws || !ws['!ref']) return { headers: [], rows: [] };
@@ -974,7 +982,9 @@ function readSheetFromWorkbook(wb, sheetName) {
     rows2d.push(cells);
   }
   while (rows2d.length && rows2d[rows2d.length - 1].every(c => c === '')) rows2d.pop();
-  const split = splitSheetRows(rows2d, [], ws['!merges'] || []);
+  const merges = ws['!merges'] || [];
+  merges.__headerRowIndex = explicitHeaderIndexFromWorksheet(ws);
+  const split = splitSheetRows(rows2d, [], merges);
   return {
     headers: split.headers,
     rows: split.rows,
@@ -998,9 +1008,18 @@ function splitSheetRows(rows2d, styles2d = [], merges = []) {
   if (!rows2d.length) {
     return { headers: [], rows: [], headerStyles: [], rowStyles: [], headerRowIndex: 0 };
   }
-  const counts = rows2d.map(row => row.reduce((n, v) => n + (v !== '' ? 1 : 0), 0));
-  let headerIdx = counts.reduce((best, count, idx) => count > counts[best] ? idx : best, 0);
-  if (counts[headerIdx] === 0) headerIdx = 0;
+  const hasExplicitFilterHeader = !!(merges && merges.__headerRowIndex != null);
+  if (!hasExplicitFilterHeader) {
+    const cols = rows2d.reduce((n, row) => Math.max(n, row.length), 0);
+    return {
+      headers: Array.from({ length: cols }, (_, i) => excelColName(i)),
+      rows: rows2d,
+      headerStyles: [],
+      rowStyles: styles2d,
+      headerRowIndex: -1,
+    };
+  }
+  const headerIdx = merges.__headerRowIndex;
   const leadingRows = rows2d.slice(0, headerIdx);
   const trailingRows = rows2d.slice(headerIdx + 1);
   const leadingStyles = styles2d.slice(0, headerIdx);
@@ -1045,6 +1064,7 @@ async function buildFreshWorkbookBytes(allSheets) {
           ...cell.font,
           bold: !!st.bold,
           italic: !!st.italic,
+          strike: !!st.strike,
           size: st.fontSize || cell.font?.size,
           name: st.fontFamily || cell.font?.name,
           color: st.color ? { argb: 'FF' + st.color.replace('#', '').toUpperCase() } : cell.font?.color,
@@ -1612,6 +1632,7 @@ function applyExcelStyle(td, inp, st) {
   }
   if (st.bold)       { td.style.fontWeight = 'bold';   if (inp) inp.style.fontWeight = 'bold'; }
   if (st.italic)     { td.style.fontStyle  = 'italic'; if (inp) inp.style.fontStyle  = 'italic'; }
+  if (st.strike)     { td.style.textDecoration = 'line-through'; if (inp) inp.style.textDecoration = 'line-through'; }
   if (st.fontSize)   { const px = Math.round(st.fontSize * 1.33 * (_zoomPercent / 100)) + 'px'; td.style.fontSize = px; if (inp) inp.style.fontSize = px; }
   if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
 }
@@ -1879,6 +1900,7 @@ function onKeyDown(e) {
     }
     return;
   }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); newDocument(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
     e.preventDefault();
     e.shiftKey ? saveAs() : saveFile();
@@ -2297,6 +2319,39 @@ function clearSearch() {
 }
 
 // ── File operations ────────────────────────────────────────────────────────
+async function newDocument() {
+  if (S.modified && !confirm('Discard unsaved changes and create a new document?')) return;
+  _xlsxOrigBuf = null;
+  _xlsxWb = null;
+  _xlsxSheetOffsets = {};
+  const body = JSON.stringify({
+    sheets: [{ name: 'Sheet1', headers: [], rows: [] }],
+    filename: '',
+    format: 'xlsx'
+  });
+  const res = await fetch('/api/load-content', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body
+  });
+  const json = await res.json();
+  if (!json.ok) {
+    alert('Failed to create document: ' + (json.error || 'unknown error'));
+    return;
+  }
+  S = await fetch('/api/data').then(r => r.json());
+  _cellStyles = { headerStyles: [], rowStyles: [] };
+  _sheetImages = [];
+  _sheetMerges = [];
+  setBaseline(S.headers, S.rows);
+  sortCol = -1; sortAsc = true;
+  resetColumnFilters();
+  resetSelection();
+  clearSearch();
+  render();
+  resetViewportToTop();
+}
+
 function openFile() {
   const inp = document.createElement('input');
   inp.type = 'file';
@@ -2758,7 +2813,9 @@ function _parseVersionData(data, preferredSheetName = currentSheetName(), cacheK
           rows2d.push(cells);
         }
         while (rows2d.length && rows2d[rows2d.length-1].every(c => c==='')) rows2d.pop();
-        const split = splitSheetRows(rows2d, [], ws['!merges'] || []);
+        const merges = ws['!merges'] || [];
+        merges.__headerRowIndex = explicitHeaderIndexFromWorksheet(ws);
+        const split = splitSheetRows(rows2d, [], merges);
         result = { headers: split.headers, rows: split.rows };
       }
     } else {
