@@ -10,7 +10,7 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
-    font-family: Arial, sans-serif;
+    font-family: Calibri, Arial, sans-serif;
     font-size: 13px;
     display: flex;
     flex-direction: column;
@@ -122,7 +122,7 @@
   #sheet-canvas {
     position: relative;
     width: max-content;
-    min-width: calc(100% * var(--sheet-zoom));
+    min-width: 0;
   }
   #sheet-image-layer {
     position: absolute;
@@ -137,7 +137,7 @@
   table {
     border-collapse: collapse;
     width: max-content;
-    min-width: calc(100% * var(--sheet-zoom));
+    min-width: 0;
     table-layout: fixed;
   }
 
@@ -1983,6 +1983,7 @@ function applyExcelStyle(td, inp, st) {
   if (st.bold)       { td.style.fontWeight = 'bold';   if (inp) inp.style.fontWeight = 'bold'; }
   if (st.italic)     { td.style.fontStyle  = 'italic'; if (inp) inp.style.fontStyle  = 'italic'; }
   if (st.strike)     { td.style.textDecoration = 'line-through'; if (inp) inp.style.textDecoration = 'line-through'; }
+  if (st.fontFamily) { td.style.fontFamily = st.fontFamily; if (inp) inp.style.fontFamily = st.fontFamily; }
   if (st.fontSize)   { const px = Math.round(st.fontSize * 1.33 * (_zoomPercent / 100)) + 'px'; td.style.fontSize = px; if (inp) inp.style.fontSize = px; }
   if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
   else if (inp)      { inp.style.textAlign = td.style.textAlign || 'inherit'; }
@@ -1997,8 +1998,6 @@ function canSpillDisplayIntoNextCell(rowIdx, colIdx) {
   if (normalizedSheetMerges().some(m => m.area === 'body' && m.row === rowIdx && m.col === colIdx && m.colspan > 1)) return false;
   const nextVal = displayCellText(rowIdx, colIdx + 1);
   if (nextVal !== '') return false;
-  const nextStyle = bodyCellStyle(rowIdx, colIdx + 1);
-  if (nextStyle?.bg) return false;
   if (buildMergeMaps('body').covered.has(mergeKey('body', rowIdx, colIdx + 1))) return false;
   if (buildMergeMaps('body').starts.has(mergeKey('body', rowIdx, colIdx + 1))) return false;
   return true;
