@@ -2265,6 +2265,11 @@ function renderRows() {
       td.appendChild(inp);
       tr.appendChild(td);
       if (st) applyExcelStyle(td, inp, st);
+      // Default numeric right-alignment (Excel "General" alignment behaviour)
+      if (!st?.align && numericCellValue(displayCellText(r, c)) !== null) {
+        td.style.textAlign = 'right';
+        inp.style.textAlign = 'right';
+      }
     });
 
     frag.appendChild(tr);
