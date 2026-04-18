@@ -154,7 +154,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     user-select: none;
-    min-width: calc(100px * var(--sheet-zoom));
+    min-width: 0;
   }
   thead th:hover { background: #c8d8ee; }
   thead th.row-num { min-width: calc(42px * var(--sheet-zoom)); width: calc(42px * var(--sheet-zoom)); cursor: default; text-align: center; }
@@ -344,7 +344,10 @@
     padding: 0;
     height: calc(28px * var(--sheet-zoom));
     font-size: calc(15px * var(--sheet-zoom));
+    position: relative;
+    overflow: visible;
   }
+  #csv-table col.row-num-col { width: calc(42px * var(--sheet-zoom)); }
   tbody td.row-num {
     text-align: center;
     color: #888;
@@ -362,11 +365,46 @@
     border: none;
     background: transparent;
     padding: calc(4px * var(--sheet-zoom)) calc(8px * var(--sheet-zoom));
+    box-sizing: border-box;
+    line-height: calc(20px * var(--sheet-zoom));
     font-family: inherit;
     font-size: inherit;
     color: #222;
     outline: none;
     display: block;
+    text-align: inherit;
+  }
+  tbody td .cell-display {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    padding: calc(4px * var(--sheet-zoom)) calc(8px * var(--sheet-zoom));
+    box-sizing: border-box;
+    line-height: calc(20px * var(--sheet-zoom));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
+    pointer-events: none;
+    z-index: 2;
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
+    background: transparent;
+  }
+  tbody td.has-display-overlay input {
+    color: transparent;
+  }
+  tbody td.has-display-overlay input::selection {
+    color: transparent;
+    background: rgba(74, 144, 217, 0.25);
+  }
+  tbody td.editing .cell-display,
+  tbody td.has-old-val .cell-display {
+    display: none;
+  }
+  tbody td.editing input {
+    color: inherit;
   }
   tbody td input:focus {
     background: #e8f0fe;
@@ -708,6 +746,7 @@
   <div id="sheet-canvas">
     <div id="sheet-image-layer"></div>
     <table id="csv-table">
+      <colgroup id="table-colgroup"></colgroup>
       <thead>
         <tr id="excel-col-row"></tr>
         <tr id="header-row"></tr>
@@ -885,7 +924,7 @@ function _resolveColor(c, themeColors) {
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
-let S = { headers: [], rows: [], headerRowIndex: 0, filepath: null, modified: false };
+let S = { headers: [], rows: [], headerRowIndex: 0, columnWidths: [], filepath: null, modified: false };
 let _xlsxWb = null;          // ExcelJS workbook for style-preserving save
 let _xlsxOrigBuf = null;     // original ArrayBuffer — reload ExcelJS lazily if load failed
 let _cellStyles = null;      // { headerStyles: [], rowStyles: [] } for xlsx files, null for csv
@@ -943,10 +982,278 @@ function updateSearchButtons() {
 
 function toXlsxCellValue(val) {
   if (val === '' || val == null) return null;
+  if (typeof val === 'string' && val.startsWith('=')) {
+    return { formula: val.slice(1) };
+  }
   const text = String(val).trim();
   const n = Number(text);
   // Preserve strings like "0805" while still storing clean numeric text as numbers.
   return (!isNaN(n) && String(n) === text) ? n : val;
+}
+
+function isFormulaValue(val) {
+  return typeof val === 'string' && val.startsWith('=');
+}
+
+function formatCellValue(value) {
+  if (value == null) return '';
+  if (value instanceof Date && !isNaN(value)) {
+    const yyyy = value.getFullYear();
+    const mm = String(value.getMonth() + 1).padStart(2, '0');
+    const dd = String(value.getDate()).padStart(2, '0');
+    const hh = String(value.getHours()).padStart(2, '0');
+    const mi = String(value.getMinutes()).padStart(2, '0');
+    const ss = String(value.getSeconds()).padStart(2, '0');
+    if (hh === '00' && mi === '00' && ss === '00') return `${yyyy}-${mm}-${dd}`;
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+  }
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : String(value);
+  return String(value);
+}
+
+function parseScalarValue(value) {
+  if (value == null) return '';
+  if (value instanceof Date) return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  const text = String(value).trim();
+  if (text === '') return '';
+  if (/^TRUE$/i.test(text)) return true;
+  if (/^FALSE$/i.test(text)) return false;
+  if (/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(text)) return Number(text);
+  if (/^\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}:\d{2})?$/.test(text)) {
+    const iso = text.includes(' ') ? text.replace(' ', 'T') : `${text}T00:00:00`;
+    const d = new Date(iso);
+    if (!isNaN(d)) return d;
+  }
+  return value;
+}
+
+function numericValue(value) {
+  const parsed = parseScalarValue(value);
+  if (parsed instanceof Date) return parsed.getTime();
+  if (typeof parsed === 'boolean') return parsed ? 1 : 0;
+  if (typeof parsed === 'number') return parsed;
+  return 0;
+}
+
+function compareValues(left, right) {
+  const a = parseScalarValue(left);
+  const b = parseScalarValue(right);
+  if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return (a === b ? 0 : (a ? 1 : -1));
+  return String(formatCellValue(a)).localeCompare(String(formatCellValue(b)), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function parseCellAddress(ref) {
+  const match = String(ref).toUpperCase().match(/^\$?([A-Z]+)\$?(\d+)$/);
+  if (!match) return null;
+  let col = 0;
+  for (const ch of match[1]) col = col * 26 + (ch.charCodeAt(0) - 64);
+  return { row: Number(match[2]) - 1, col: col - 1 };
+}
+
+function expandRange(refA, refB) {
+  const a = parseCellAddress(refA);
+  const b = parseCellAddress(refB);
+  if (!a || !b) return [];
+  const out = [];
+  const rowStart = Math.min(a.row, b.row), rowEnd = Math.max(a.row, b.row);
+  const colStart = Math.min(a.col, b.col), colEnd = Math.max(a.col, b.col);
+  for (let r = rowStart; r <= rowEnd; r++) {
+    for (let c = colStart; c <= colEnd; c++) out.push({ row: r, col: c });
+  }
+  return out;
+}
+
+function getRawCellValue(r, c) {
+  if (r < 0 || c < 0) return '';
+  return S.rows?.[r]?.[c] ?? '';
+}
+
+function flattenFormulaArgs(values) {
+  const out = [];
+  values.forEach(v => {
+    if (Array.isArray(v)) out.push(...flattenFormulaArgs(v));
+    else out.push(v);
+  });
+  return out;
+}
+
+function splitFormulaArgs(text) {
+  const args = [];
+  let current = '';
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') {
+      current += ch;
+      if (text[i + 1] === '"') {
+        current += text[++i];
+      } else {
+        inString = !inString;
+      }
+      continue;
+    }
+    if (!inString) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (ch === ',' && depth === 0) {
+        args.push(current.trim());
+        current = '';
+        continue;
+      }
+    }
+    current += ch;
+  }
+  if (current.trim() || text.includes(',')) args.push(current.trim());
+  return args;
+}
+
+function matchCriteria(value, criteria) {
+  const criterion = parseScalarValue(criteria);
+  if (typeof criteria === 'string') {
+    const text = criteria.trim();
+    const opMatch = text.match(/^(<=|>=|<>|=|<|>)(.*)$/);
+    if (opMatch) {
+      const [, op, rhsText] = opMatch;
+      const rhs = parseScalarValue(rhsText.trim());
+      const cmp = compareValues(value, rhs);
+      if (op === '=') return cmp === 0;
+      if (op === '<>') return cmp !== 0;
+      if (op === '<') return cmp < 0;
+      if (op === '>') return cmp > 0;
+      if (op === '<=') return cmp <= 0;
+      if (op === '>=') return cmp >= 0;
+    }
+  }
+  return compareValues(value, criterion) === 0;
+}
+
+function evalFormulaExpression(expr, context = new Set()) {
+  const trimmed = expr.trim();
+  if (trimmed === '') return '';
+  if (/^".*"$/.test(trimmed)) return trimmed.slice(1, -1).replace(/""/g, '"');
+  if (/^\$?[A-Z]+\$?\d+:\$?[A-Z]+\$?\d+$/i.test(trimmed)) {
+    const [a, b] = trimmed.split(':');
+    return expandRange(a, b).map(({ row, col }) => evaluateCellValue(row, col, context));
+  }
+  if (/^\$?[A-Z]+\$?\d+$/i.test(trimmed)) {
+    const addr = parseCellAddress(trimmed);
+    return addr ? evaluateCellValue(addr.row, addr.col, context) : '';
+  }
+  if (/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(trimmed)) return Number(trimmed);
+  if (/^TRUE$/i.test(trimmed)) return true;
+  if (/^FALSE$/i.test(trimmed)) return false;
+  const funcMatch = trimmed.match(/^([A-Z][A-Z0-9\.]*)\(([\s\S]*)\)$/i);
+  if (funcMatch) {
+    const name = funcMatch[1].toUpperCase();
+    const args = splitFormulaArgs(funcMatch[2]).map(arg => evalFormulaExpression(arg, context));
+    const flatNums = vals => flattenFormulaArgs(vals).map(numericValue);
+    if (name === 'SUM') return flatNums(args).reduce((a, b) => a + b, 0);
+    if (name === 'AVERAGE') {
+      const nums = flatNums(args);
+      return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
+    }
+    if (name === 'MIN') return Math.min(...flatNums(args));
+    if (name === 'MAX') return Math.max(...flatNums(args));
+    if (name === 'AND') return flattenFormulaArgs(args).every(v => !!parseScalarValue(v));
+    if (name === 'OR') return flattenFormulaArgs(args).some(v => !!parseScalarValue(v));
+    if (name === 'NOT') return !parseScalarValue(args[0]);
+    if (name === 'IF') return parseScalarValue(args[0]) ? (args[1] ?? '') : (args[2] ?? '');
+    if (name === 'ROUND') {
+      const factor = Math.pow(10, numericValue(args[1] ?? 0));
+      return Math.round(numericValue(args[0]) * factor) / factor;
+    }
+    if (name === 'EDATE') {
+      const base = parseScalarValue(args[0]);
+      const months = numericValue(args[1]);
+      const date = base instanceof Date ? new Date(base.getTime()) : new Date(String(base).replace(' ', 'T'));
+      if (isNaN(date)) return '#VALUE!';
+      const out = new Date(date.getTime());
+      const day = out.getDate();
+      out.setDate(1);
+      out.setMonth(out.getMonth() + months);
+      const lastDay = new Date(out.getFullYear(), out.getMonth() + 1, 0).getDate();
+      out.setDate(Math.min(day, lastDay));
+      return out;
+    }
+    if (name === 'SUMIFS') {
+      const sumRange = flattenFormulaArgs(args[0] ?? []);
+      let total = 0;
+      for (let i = 0; i < sumRange.length; i++) {
+        let ok = true;
+        for (let j = 1; j < args.length; j += 2) {
+          const rangeVals = flattenFormulaArgs(args[j] ?? []);
+          const criteria = args[j + 1];
+          if (!matchCriteria(rangeVals[i], criteria)) { ok = false; break; }
+        }
+        if (ok) total += numericValue(sumRange[i]);
+      }
+      return total;
+    }
+  }
+
+  const comparisonOps = ['<=', '>=', '<>', '=', '<', '>'];
+  for (const op of comparisonOps) {
+    let depth = 0, inString = false;
+    for (let i = 0; i <= trimmed.length - op.length; i++) {
+      const ch = trimmed[i];
+      if (ch === '"') inString = !inString;
+      if (inString) continue;
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (depth === 0 && trimmed.slice(i, i + op.length) === op) {
+        const left = evalFormulaExpression(trimmed.slice(0, i), context);
+        const right = evalFormulaExpression(trimmed.slice(i + op.length), context);
+        const cmp = compareValues(left, right);
+        if (op === '=') return cmp === 0;
+        if (op === '<>') return cmp !== 0;
+        if (op === '<') return cmp < 0;
+        if (op === '>') return cmp > 0;
+        if (op === '<=') return cmp <= 0;
+        if (op === '>=') return cmp >= 0;
+      }
+    }
+  }
+
+  const jsExpr = trimmed
+    .replace(/\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)/gi, '0')
+    .replace(/\$?[A-Z]+\$?\d+/gi, m => String(numericValue(evalFormulaExpression(m, context))))
+    .replace(/\^/g, '**');
+  try {
+    // eslint-disable-next-line no-new-func
+    return Function(`return (${jsExpr});`)();
+  } catch {
+    return '#ERROR!';
+  }
+}
+
+function evaluateCellValue(r, c, context = new Set()) {
+  const key = `${r},${c}`;
+  if (context.has(key)) return '#CYCLE!';
+  const raw = getRawCellValue(r, c);
+  if (!isFormulaValue(raw)) return parseScalarValue(raw);
+  const next = new Set(context);
+  next.add(key);
+  return evalFormulaExpression(raw.slice(1), next);
+}
+
+function displayCellText(r, c) {
+  const raw = getRawCellValue(r, c);
+  if (!isFormulaValue(raw)) return raw != null ? raw : '';
+  return formatCellValue(evaluateCellValue(r, c));
+}
+
+function refreshVisibleFormulaDisplays() {
+  document.querySelectorAll('#table-body input[data-r][data-c]').forEach(inp => {
+    if (inp === document.activeElement) return;
+    const r = +inp.dataset.r;
+    const c = +inp.dataset.c;
+    inp.value = displayCellText(r, c);
+  });
 }
 
 function normalizeSheetRows(rows) {
@@ -974,7 +1281,8 @@ function readSheetFromWorkbook(wb, sheetName) {
     for (let c = range.s.c; c <= range.e.c; c++) {
       const cell = ws[XLSX.utils.encode_cell({ r, c })];
       if (!cell) { cells.push(''); continue; }
-      if (cell.t === 'b') cells.push(cell.v ? 'TRUE' : 'FALSE');
+      if (cell.f != null) cells.push('=' + String(cell.f));
+      else if (cell.t === 'b') cells.push(cell.v ? 'TRUE' : 'FALSE');
       else if (cell.w != null) cells.push(String(cell.w));
       else if (cell.v != null) cells.push(String(cell.v));
       else cells.push('');
@@ -1037,6 +1345,10 @@ async function buildFreshWorkbookBytes(allSheets) {
   const wb = new ExcelJS.Workbook();
   (allSheets || []).forEach(sh => {
     const ws = wb.addWorksheet(sh.name);
+    (sh.columnWidths || []).forEach((width, idx) => {
+      const num = Number(width);
+      if (Number.isFinite(num) && num > 0) ws.getColumn(idx + 1).width = num;
+    });
     const headerIdx = Number.isFinite(Number(sh.headerRowIndex)) ? Number(sh.headerRowIndex) : 0;
     const rows = sh.rows || [];
     const totalRows = headerIdx < 0 ? rows.length : rows.length + 1;
@@ -1191,6 +1503,62 @@ function renderSheetImages() {
   });
 }
 
+function excelWidthToPixels(width) {
+  const num = Number(width);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return Math.round(num * 7 + 5);
+}
+
+function applyColumnPixelWidths(widths) {
+  const scale = _zoomPercent / 100;
+  const ths = document.querySelectorAll('#header-row th');
+  const excelThs = document.querySelectorAll('#excel-col-row th');
+  const colgroup = document.getElementById('table-colgroup');
+  const rowNumPx = Math.round(42 * scale);
+  if (colgroup) {
+    colgroup.innerHTML = '';
+    const rowCol = document.createElement('col');
+    rowCol.className = 'row-num-col';
+    rowCol.style.width = rowNumPx + 'px';
+    colgroup.appendChild(rowCol);
+  }
+  const rowNumWidth = rowNumPx + 'px';
+  if (ths[0]) {
+    ths[0].style.width = rowNumWidth;
+    ths[0].style.minWidth = rowNumWidth;
+  }
+  if (excelThs[0]) {
+    excelThs[0].style.width = rowNumWidth;
+    excelThs[0].style.minWidth = rowNumWidth;
+  }
+  widths.forEach((px, c) => {
+    const width = Math.round(px * scale) + 'px';
+    if (colgroup) {
+      const col = document.createElement('col');
+      col.style.width = width;
+      colgroup.appendChild(col);
+    }
+    const th = ths[c + 1];
+    const excelTh = excelThs[c + 1];
+    if (th) {
+      th.style.width = width;
+      th.style.minWidth = width;
+    }
+    if (excelTh) {
+      excelTh.style.width = width;
+      excelTh.style.minWidth = width;
+    }
+  });
+}
+
+function applySavedColumnWidths() {
+  const widths = Array.isArray(S.columnWidths) ? S.columnWidths : [];
+  if (!widths.length) return false;
+  const pxWidths = S.headers.map((_, c) => excelWidthToPixels(widths[c]) || 96);
+  applyColumnPixelWidths(pxWidths);
+  return true;
+}
+
 function normalizedSheetMerges() {
   return (_sheetMerges || []).map(normalizeMerge).filter(Boolean);
 }
@@ -1235,7 +1603,7 @@ function sheetRowNumberForBodyRow(rowIdx) {
 
 function createHeaderCellContent(cell, colIdx, span) {
   cell.title = 'Click to sort/select • Shift/Cmd+click to multi-select • Double-click to rename';
-  cell.style.minWidth = Math.round(120 * (_zoomPercent / 100)) + 'px';
+  cell.style.minWidth = '0';
   cell.dataset.colStart = String(colIdx);
   cell.dataset.colSpan = String(span);
   if (span > 1) cell.colSpan = span;
@@ -1379,21 +1747,12 @@ function unmergeSelection() {
 // ── Auto-resize columns to fit content ─────────────────────────────────────
 const _measureCtx = document.createElement('canvas').getContext('2d'); // reused across calls
 function autoResize() {
+  if (applySavedColumnWidths()) return;
   const PAD = 28, MIN = 60, MAX = 500;
-  const scale = _zoomPercent / 100;
-  const ths = document.querySelectorAll('#header-row th');
-  const excelThs = document.querySelectorAll('#excel-col-row th');
   const bodyMergeMap = buildMergeMaps('body');
   const headerMergeMap = buildMergeMaps('header');
-  const rowNumWidth = Math.round(42 * scale) + 'px';
-  if (ths[0]) {
-    ths[0].style.width = rowNumWidth;
-    ths[0].style.minWidth = rowNumWidth;
-  }
-  if (excelThs[0]) {
-    excelThs[0].style.width = rowNumWidth;
-    excelThs[0].style.minWidth = rowNumWidth;
-  }
+  const scale = _zoomPercent / 100;
+  const pxWidths = [];
 
   S.headers.forEach((header, c) => {
     _measureCtx.font = 'bold 13px Arial';
@@ -1409,18 +1768,9 @@ function autoResize() {
       if (w > maxPx) maxPx = w;
     }
 
-    const width = Math.max(MIN * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + PAD) * scale));
-    const th = ths[c + 1]; // +1 to skip the row-number corner
-    const excelTh = excelThs[c + 1];
-    if (th) {
-      th.style.width    = width + 'px';
-      th.style.minWidth = width + 'px';
-    }
-    if (excelTh) {
-      excelTh.style.width = width + 'px';
-      excelTh.style.minWidth = width + 'px';
-    }
+    pxWidths.push(Math.max(MIN * scale, Math.min(MAX * scale, (Math.ceil(maxPx) + PAD) * scale)) / scale);
   });
+  applyColumnPixelWidths(pxWidths);
 }
 
 function excelColName(idx) {
@@ -1635,6 +1985,38 @@ function applyExcelStyle(td, inp, st) {
   if (st.strike)     { td.style.textDecoration = 'line-through'; if (inp) inp.style.textDecoration = 'line-through'; }
   if (st.fontSize)   { const px = Math.round(st.fontSize * 1.33 * (_zoomPercent / 100)) + 'px'; td.style.fontSize = px; if (inp) inp.style.fontSize = px; }
   if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
+  else if (inp)      { inp.style.textAlign = td.style.textAlign || 'inherit'; }
+}
+
+function bodyCellStyle(rowIdx, colIdx) {
+  return _cellStyles?.rowStyles?.[rowIdx]?.[colIdx] || null;
+}
+
+function canSpillDisplayIntoNextCell(rowIdx, colIdx) {
+  if (colIdx + 1 >= S.headers.length) return false;
+  if (normalizedSheetMerges().some(m => m.area === 'body' && m.row === rowIdx && m.col === colIdx && m.colspan > 1)) return false;
+  const nextVal = displayCellText(rowIdx, colIdx + 1);
+  if (nextVal !== '') return false;
+  const nextStyle = bodyCellStyle(rowIdx, colIdx + 1);
+  if (nextStyle?.bg) return false;
+  if (buildMergeMaps('body').covered.has(mergeKey('body', rowIdx, colIdx + 1))) return false;
+  if (buildMergeMaps('body').starts.has(mergeKey('body', rowIdx, colIdx + 1))) return false;
+  return true;
+}
+
+function displaySpillWidth(rowIdx, colIdx, colSpan) {
+  let width = 0;
+  for (let i = 0; i < colSpan; i++) {
+    const px = excelWidthToPixels(S.columnWidths?.[colIdx + i]);
+    width += px || 96;
+  }
+  let nextCol = colIdx + colSpan;
+  while (canSpillDisplayIntoNextCell(rowIdx, nextCol - 1)) {
+    const px = excelWidthToPixels(S.columnWidths?.[nextCol]);
+    width += px || 96;
+    nextCol += 1;
+  }
+  return width;
 }
 
 function renderRows() {
@@ -1730,9 +2112,10 @@ function renderRows() {
 
       const inp = document.createElement('input');
       inp.type = 'text';
-      inp.value = row[c] != null ? row[c] : '';
+      inp.value = displayCellText(r, c);
       inp.dataset.r = r;
       inp.dataset.c = c;
+      let displayLayer = null;
 
       // Baseline (unsaved-edit) highlight
       const bv0 = baselineVal(r, c);
@@ -1749,13 +2132,46 @@ function renderRows() {
           oldValLabel = document.createElement('span');
           oldValLabel.className = 'old-val';
           oldValLabel.textContent = curVal;
+          td.classList.add('has-old-val');
         }
       }
+
+      const st = _cellStyles?.rowStyles?.[r]?.[c];
+      const align = st?.align || td.style.textAlign || '';
+      const syncDisplayLayer = () => {
+        const displayText = displayCellText(r, c);
+        const shouldOverlay = !!displayText && !oldValLabel && colSpan === 1 && align !== 'right' && align !== 'center';
+        if (!shouldOverlay) {
+          if (displayLayer) {
+            displayLayer.remove();
+            displayLayer = null;
+          }
+          td.classList.remove('has-display-overlay');
+          return;
+        }
+        if (!displayLayer) {
+          displayLayer = document.createElement('span');
+          displayLayer.className = 'cell-display';
+          if (inp.parentNode === td) td.insertBefore(displayLayer, inp);
+          else td.appendChild(displayLayer);
+        }
+        displayLayer.textContent = displayText;
+        displayLayer.style.width = displaySpillWidth(r, c, colSpan) + 'px';
+        td.classList.add('has-display-overlay');
+      };
+      syncDisplayLayer();
 
       td.addEventListener('mousedown', (e) => { _pendingMouseEvent = e; });
       inp.addEventListener('focus', () => {
         selectCell(r, c, _pendingMouseEvent);
         _pendingMouseEvent = null;
+        td.classList.add('editing');
+        if (isFormulaValue(S.rows[r][c])) inp.value = S.rows[r][c];
+      });
+      inp.addEventListener('blur', () => {
+        td.classList.remove('editing');
+        syncDisplayLayer();
+        setTimeout(() => refreshVisibleFormulaDisplays(), 0);
       });
       inp.addEventListener('input', () => {
         S.rows[r][c] = inp.value;
@@ -1768,15 +2184,14 @@ function renderRows() {
           td.classList.toggle('cell-diff-changed', changed);
           if (oldValLabel) oldValLabel.style.display = changed ? '' : 'none';
         }
+        syncDisplayLayer();
+        refreshVisibleFormulaDisplays();
       });
       inp.addEventListener('keydown', onCellKeyDown);
       if (oldValLabel) td.appendChild(oldValLabel);
       td.appendChild(inp);
       tr.appendChild(td);
-      if (_cellStyles && _cellStyles.rowStyles[r]) {
-        const st = _cellStyles.rowStyles[r][c];
-        if (st) applyExcelStyle(td, inp, st);
-      }
+      if (st) applyExcelStyle(td, inp, st);
     });
 
     frag.appendChild(tr);
@@ -1958,6 +2373,16 @@ function deleteColumnStyles(colIndexes) {
   }
 }
 
+function insertColumnWidths(insertAt, widths = [null]) {
+  if (!Array.isArray(S.columnWidths)) S.columnWidths = [];
+  S.columnWidths.splice(insertAt, 0, ...widths);
+}
+
+function deleteColumnWidths(colIndexes) {
+  if (!Array.isArray(S.columnWidths)) return;
+  colIndexes.forEach(c => S.columnWidths.splice(c, 1));
+}
+
 function stripColorStyle(st) {
   if (!st) return st;
   const next = { ...st };
@@ -2101,7 +2526,9 @@ function duplicateSelection() {
   if (!rows.length && cols.length) {
     const insertAt = cols[cols.length - 1] + 1;
     const headerCopies = cols.map(c => S.headers[c]);
+    const widthCopies = cols.map(c => S.columnWidths?.[c] ?? null);
     S.headers.splice(insertAt, 0, ...headerCopies);
+    insertColumnWidths(insertAt, widthCopies);
     S.rows.forEach(row => {
       const vals = cols.map(c => row[c] ?? '');
       row.splice(insertAt, 0, ...vals);
@@ -2199,6 +2626,7 @@ function addColumn(beforeCurrent = false) {
   prompt_('New column name', '', name => {
     if (!name) return;
     S.headers.splice(insertAt, 0, name);
+    insertColumnWidths(insertAt, [null]);
     S.rows.forEach(row => row.splice(insertAt, 0, ''));
     insertNullColumnStyles(insertAt);
     shiftMergesForColumnInsert(insertAt);
@@ -2217,6 +2645,7 @@ function deleteColumn() {
     : `${toDelete.length} columns (${toDelete.map(c => S.headers[c]).join(', ')})`;
   if (!confirm(`Delete ${label}?`)) return;
   toDelete.forEach(c => { S.headers.splice(c, 1); S.rows.forEach(row => row.splice(c, 1)); });
+  deleteColumnWidths(toDelete);
   deleteColumnStyles(toDelete);
   shiftMergesForColumnDelete(toDelete);
   const next = S.headers.length > 0 ? Math.min(Math.min(...toDelete), S.headers.length - 1) : -1;
@@ -2412,10 +2841,12 @@ function openFile() {
         _cellStyles = { headerStyles: sheets[0].headerStyles || [], rowStyles: sheets[0].rowStyles || [] };
         _sheetImages = sheets[0].images || [];
         _sheetMerges = sheets[0].merges || [];
+        S.columnWidths = sheets[0].columnWidths || [];
       } else {
         _cellStyles = null;
         _sheetImages = [];
         _sheetMerges = [];
+        S.columnWidths = [];
       }
       setBaseline(S.headers, S.rows);
       sortCol = -1; sortAsc = true;
@@ -2569,6 +3000,7 @@ async function syncNow() {
       headers: S.headers,
       rows: S.rows,
       headerRowIndex: S.headerRowIndex,
+      columnWidths: S.columnWidths || [],
       headerStyles: _cellStyles?.headerStyles || [],
       rowStyles: _cellStyles?.rowStyles || [],
       merges: normalizedSheetMerges(),
@@ -2805,7 +3237,8 @@ function _parseVersionData(data, preferredSheetName = currentSheetName(), cacheK
           for (let c = range.s.c; c <= range.e.c; c++) {
             const cell = ws[XLSX.utils.encode_cell({ r, c })];
             if (!cell) { cells.push(''); continue; }
-            if (cell.t === 'b') cells.push(cell.v ? 'TRUE' : 'FALSE');
+            if (cell.f != null) cells.push('=' + String(cell.f));
+            else if (cell.t === 'b') cells.push(cell.v ? 'TRUE' : 'FALSE');
             else if (cell.w != null) cells.push(cell.w);
             else if (cell.v != null) cells.push(String(cell.v));
             else cells.push('');
@@ -2864,6 +3297,7 @@ function loadVersionIntoEditor() {
   if (!_diffVersion) return;
   S.headers = _diffVersion.headers;
   S.rows    = _diffVersion.rows;
+  S.columnWidths = [];
   setBaseline(S.headers, S.rows);
   selectedRows = new Set(); selectedCols = new Set(); anchorRow = -1; anchorCol = -1;
   markModified(); render(); closeDiff();
@@ -2904,6 +3338,7 @@ async function loadVersion(sha) {
       headers: activeSheet.headers || [],
       rows: activeSheet.rows || [],
       headerRowIndex: activeSheet.headerRowIndex ?? 0,
+      columnWidths: activeSheet.columnWidths || [],
       filepath: currentGHPath() || S.filepath || 'version.xlsx',
       filetype: 'xlsx',
       sheets: sheets.map(sh => ({ name: sh.name })),
@@ -2961,6 +3396,7 @@ async function loadVersion(sha) {
       headers: activeSheet.headers || [],
       rows: activeSheet.rows || [],
       headerRowIndex: activeSheet.headerRowIndex ?? 0,
+      columnWidths: activeSheet.columnWidths || [],
       filepath: currentGHPath() || S.filepath || 'version.xlsx',
       filetype: 'xlsx',
       sheets: sheets.map(sh => ({ name: sh.name })),
@@ -2985,6 +3421,7 @@ async function loadVersion(sha) {
   }
   const { headers, rows } = _parseVersionData(data, currentSheetName(), sha);
   S.headers = headers; S.rows = rows;
+  S.columnWidths = [];
   _cellStyles = null;
   _sheetImages = [];
   _sheetMerges = [];
@@ -3348,6 +3785,7 @@ async function switchSheet(idx) {
   _cellStyles = activeSh ? { headerStyles: activeSh.headerStyles || [], rowStyles: activeSh.rowStyles || [] } : null;
   _sheetImages = activeSh?.images || [];
   _sheetMerges = activeSh?.merges || [];
+  S.columnWidths = activeSh?.columnWidths || S.columnWidths || [];
   setBaseline(S.headers, S.rows);
   resetColumnFilters();
   resetSelection(); clearSearch();

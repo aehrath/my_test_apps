@@ -306,6 +306,44 @@ def _merge_ref_for_sheet(sheet, merge):
     return f'{_excel_col_name(start_col - 1)}{start_row}:{_excel_col_name(end_col - 1)}{end_row}'
 
 
+def _propagate_consistent_column_alignment(rows2d, styles2d, header_idx):
+    if not rows2d or not styles2d:
+        return
+    data_start = (header_idx + 1) if header_idx is not None and header_idx >= 0 else 0
+    max_col = max((len(row) for row in rows2d), default=0)
+    for col in range(max_col):
+        aligned_rows = []
+        align_values = set()
+        last_nonempty = None
+        for row in range(data_start, len(rows2d)):
+            value = rows2d[row][col] if col < len(rows2d[row]) else ''
+            if value == '':
+                continue
+            last_nonempty = row
+            st = styles2d[row][col] if col < len(styles2d[row]) else None
+            align = st.get('align') if st else None
+            if align:
+                aligned_rows.append(row)
+                align_values.add(align)
+        if len(aligned_rows) < 5 or len(align_values) != 1 or last_nonempty is None:
+            continue
+        last_aligned = aligned_rows[-1]
+        if last_aligned >= last_nonempty:
+            continue
+        inferred_align = next(iter(align_values))
+        for row in range(last_aligned + 1, last_nonempty + 1):
+            value = rows2d[row][col] if col < len(rows2d[row]) else ''
+            if value == '':
+                continue
+            while len(styles2d[row]) <= col:
+                styles2d[row].append(None)
+            st = dict(styles2d[row][col] or {})
+            if st.get('align'):
+                continue
+            st['align'] = inferred_align
+            styles2d[row][col] = st
+
+
 def _parse_xlsx_sheets_with_styles(raw_bytes):
     if not _XLSX_OK:
         raise RuntimeError('openpyxl not installed — run: pip install openpyxl')
@@ -315,13 +353,21 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             message='Slicer List extension is not supported and will be removed',
             category=UserWarning,
         )
-        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
     theme_colors = _parse_theme_colors(wb)
     image_map = _parse_xlsx_images(raw_bytes)
     sheets = []
     for ws in wb.worksheets:
         max_row = ws.max_row or 0
         max_col = ws.max_column or 0
+        default_col_width = getattr(getattr(ws, 'sheet_format', None), 'defaultColWidth', None)
+        col_widths = []
+        for c in range(1, max_col + 1):
+            dim = ws.column_dimensions.get(_excel_col_name(c - 1))
+            width = getattr(dim, 'width', None) if dim else None
+            if width is None:
+                width = default_col_width
+            col_widths.append(float(width) if width else None)
         rows2d = []
         styles2d = []
         for r in range(1, max_row + 1):
@@ -372,6 +418,8 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             except Exception:
                 header_idx = None
 
+        _propagate_consistent_column_alignment(rows2d, styles2d, header_idx)
+
         if header_idx is None:
             headers = [_excel_col_name(i) for i in range(max_col)]
             header_styles = []
@@ -399,6 +447,7 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             'rowStyles': leading_styles + trailing_styles,
             'images': image_map.get(ws.title, []),
             'headerRowIndex': header_idx_out,
+            'columnWidths': col_widths,
             'merges': _parse_sheet_merges(ws, header_idx_out),
         })
     return sheets
@@ -417,11 +466,20 @@ def _ordered_sheet_rows(sheet):
 
 def _set_xml_cell_value(cell_el, value):
     original_t = cell_el.attrib.get('t')
+    original_formula = next((child for child in list(cell_el) if child.tag.endswith('f')), None)
+    original_formula_attrs = dict(original_formula.attrib) if original_formula is not None else None
     for child in list(cell_el):
         if child.tag.endswith(('v', 'is', 'f')):
             cell_el.remove(child)
     if value == '' or value is None:
         cell_el.attrib.pop('t', None)
+        return
+    if isinstance(value, str) and value.startswith('='):
+        cell_el.attrib.pop('t', None)
+        f = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'f')
+        if original_formula_attrs:
+            f.attrib.update(original_formula_attrs)
+        f.text = value[1:]
         return
     py_val = _str_to_cell(value) if isinstance(value, str) else value
     force_string = original_t in ('s', 'str', 'inlineStr')
@@ -635,7 +693,7 @@ def _parse_xlsx(raw_bytes):
             message='Slicer List extension is not supported and will be removed',
             category=UserWarning,
         )
-        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
     ws = wb.active
     if ws is None:
         # Workbook has no active sheet — try first sheet
@@ -750,6 +808,7 @@ class Handler(BaseHTTPRequestHandler):
                 'headers':     state.headers,
                 'rows':        state.rows,
                 'headerRowIndex': active.get('headerRowIndex', 0),
+                'columnWidths': active.get('columnWidths', []),
                 'filepath':    state.filepath,
                 'filetype':    state.filetype,
                 'sheets':      [{'name': s['name']} for s in state.sheets],
@@ -930,6 +989,7 @@ class Handler(BaseHTTPRequestHandler):
             state.rows    = data.get('rows',    state.rows)
             active = state.sheets[state.active_sheet]
             active['headerRowIndex'] = data.get('headerRowIndex', active.get('headerRowIndex', 0))
+            active['columnWidths'] = data.get('columnWidths', active.get('columnWidths', []))
             active['headerStyles'] = data.get('headerStyles', active.get('headerStyles', []))
             active['rowStyles'] = data.get('rowStyles', active.get('rowStyles', []))
             active['merges'] = data.get('merges', active.get('merges', []))
