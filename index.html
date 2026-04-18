@@ -2017,6 +2017,19 @@ function applyExcelStyle(td, inp, st) {
   if (st.fontSize)   { const size = `calc(${st.fontSize}px * var(--sheet-zoom))`; td.style.fontSize = size; if (inp) inp.style.fontSize = size; }
   if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
   else if (inp)      { inp.style.textAlign = td.style.textAlign || 'inherit'; }
+  const _borderShadow = (b, side) => {
+    if (!b?.style) return null;
+    const color = b.color || '#000000';
+    const w = /medium|thick/.test(b.style) ? 2 : 1;
+    const sp = w - 1;
+    if (side === 'top')    return `inset 0 ${w}px 0 -${sp}px ${color}`;
+    if (side === 'bottom') return `inset 0 -${w}px 0 -${sp}px ${color}`;
+    if (side === 'left')   return `inset ${w}px 0 0 -${sp}px ${color}`;
+    if (side === 'right')  return `inset -${w}px 0 0 -${sp}px ${color}`;
+  };
+  const shadows = [['borderTop','top'],['borderBottom','bottom'],['borderLeft','left'],['borderRight','right']]
+    .map(([prop, side]) => _borderShadow(st[prop], side)).filter(Boolean);
+  if (shadows.length) td.style.boxShadow = shadows.join(', ');
 }
 
 function bodyCellStyle(rowIdx, colIdx) {

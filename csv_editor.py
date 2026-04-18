@@ -493,6 +493,14 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
                     st['fontFamily'] = font.name
                 if getattr(align, 'horizontal', None):
                     st['align'] = align.horizontal
+                border = cell.border
+                for side, key in [('top', 'borderTop'), ('bottom', 'borderBottom'),
+                                   ('left', 'borderLeft'), ('right', 'borderRight')]:
+                    b = getattr(border, side, None)
+                    bs = getattr(b, 'border_style', None) if b else None
+                    if bs:
+                        bc = _resolve_openpyxl_color(getattr(b, 'color', None), theme_colors) or '#000000'
+                        st[key] = {'style': bs, 'color': bc}
                 row_styles.append(st or None)
             rows2d.append(row_vals)
             styles2d.append(row_styles)
