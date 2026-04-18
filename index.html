@@ -318,10 +318,44 @@
 
   thead th.selected-col { background: #a8c4e8; }
   tbody td.selected-col { background: rgba(100,160,255,.10); }
-  tbody td.active-cell {
-    outline: 2px solid #1a73e8;
-    outline-offset: -2px;
-    z-index: 1;
+  tbody td.active-cell { z-index: 1; }
+  tbody td.selected-cell { z-index: 1; }
+  tbody td.selection-top    { box-shadow: inset 0 2px 0 #1a73e8; }
+  tbody td.selection-bottom { box-shadow: inset 0 -2px 0 #1a73e8; }
+  tbody td.selection-left   { box-shadow: inset 2px 0 0 #1a73e8; }
+  tbody td.selection-right  { box-shadow: inset -2px 0 0 #1a73e8; }
+  tbody td.selection-top.selection-left {
+    box-shadow: inset 0 2px 0 #1a73e8, inset 2px 0 0 #1a73e8;
+  }
+  tbody td.selection-top.selection-right {
+    box-shadow: inset 0 2px 0 #1a73e8, inset -2px 0 0 #1a73e8;
+  }
+  tbody td.selection-bottom.selection-left {
+    box-shadow: inset 0 -2px 0 #1a73e8, inset 2px 0 0 #1a73e8;
+  }
+  tbody td.selection-bottom.selection-right {
+    box-shadow: inset 0 -2px 0 #1a73e8, inset -2px 0 0 #1a73e8;
+  }
+  tbody td.selection-top.selection-bottom {
+    box-shadow: inset 0 2px 0 #1a73e8, inset 0 -2px 0 #1a73e8;
+  }
+  tbody td.selection-left.selection-right {
+    box-shadow: inset 2px 0 0 #1a73e8, inset -2px 0 0 #1a73e8;
+  }
+  tbody td.selection-top.selection-bottom.selection-left {
+    box-shadow: inset 0 2px 0 #1a73e8, inset 0 -2px 0 #1a73e8, inset 2px 0 0 #1a73e8;
+  }
+  tbody td.selection-top.selection-bottom.selection-right {
+    box-shadow: inset 0 2px 0 #1a73e8, inset 0 -2px 0 #1a73e8, inset -2px 0 0 #1a73e8;
+  }
+  tbody td.selection-top.selection-left.selection-right {
+    box-shadow: inset 0 2px 0 #1a73e8, inset 2px 0 0 #1a73e8, inset -2px 0 0 #1a73e8;
+  }
+  tbody td.selection-bottom.selection-left.selection-right {
+    box-shadow: inset 0 -2px 0 #1a73e8, inset 2px 0 0 #1a73e8, inset -2px 0 0 #1a73e8;
+  }
+  tbody td.selection-top.selection-bottom.selection-left.selection-right {
+    box-shadow: inset 0 2px 0 #1a73e8, inset 0 -2px 0 #1a73e8, inset 2px 0 0 #1a73e8, inset -2px 0 0 #1a73e8;
   }
   tbody tr.selected-row td.selected-col { background: rgba(80,140,255,.30) !important; }
   tbody tr.sheet-header-row td {
@@ -1431,7 +1465,7 @@ function render() {
   autoResize();
   renderRows();
   renderSheetImages();
-  updateStatus();
+  updateSelectionUI();
   renderSheetTabs();
 }
 
@@ -2204,6 +2238,8 @@ function renderRows() {
       const merge = mergeMap.starts.get(mergeKey('body', r, c));
       const rowSpan = merge?.rowspan || 1;
       const colSpan = merge?.colspan || 1;
+      td.dataset.rowStart = String(r);
+      td.dataset.rowSpan = String(rowSpan);
       td.dataset.colStart = String(c);
       td.dataset.colSpan = String(colSpan);
       if (rowSpan > 1) td.rowSpan = rowSpan;
@@ -2406,6 +2442,43 @@ function updateSelectionUI() {
     const span = +(el.dataset.colSpan || 1);
     el.classList.toggle('selected-col', colSelectionOverlaps(start, span));
   });
+  document.querySelectorAll('#table-body td[data-row-start][data-col-start]').forEach(td => {
+    const rowStart = +(td.dataset.rowStart || 0);
+    const rowSpan = +(td.dataset.rowSpan || 1);
+    const colStart = +(td.dataset.colStart || 0);
+    const colSpan = +(td.dataset.colSpan || 1);
+    const selectedRowIndexes = [];
+    const selectedColIndexes = [];
+
+    for (let r = rowStart; r < rowStart + rowSpan; r++) {
+      if (selectedRows.has(r)) selectedRowIndexes.push(r);
+    }
+    for (let c = colStart; c < colStart + colSpan; c++) {
+      if (selectedCols.has(c)) selectedColIndexes.push(c);
+    }
+
+    const isSelected = selectedRowIndexes.length > 0 && selectedColIndexes.length > 0;
+    td.classList.toggle('selected-cell', isSelected);
+
+    let top = false;
+    let bottom = false;
+    let left = false;
+    let right = false;
+    if (isSelected) {
+      top = selectedColIndexes.some(c => !selectedRows.has(rowStart - 1) || !selectedCols.has(c));
+      bottom = selectedColIndexes.some(c => !selectedRows.has(rowStart + rowSpan) || !selectedCols.has(c));
+      left = selectedRowIndexes.some(r => !selectedRows.has(r) || !selectedCols.has(colStart - 1));
+      right = selectedRowIndexes.some(r => !selectedRows.has(r) || !selectedCols.has(colStart + colSpan));
+    }
+
+    td.classList.toggle('selection-top', top);
+    td.classList.toggle('selection-bottom', bottom);
+    td.classList.toggle('selection-left', left);
+    td.classList.toggle('selection-right', right);
+  });
+  const activeInput = document.querySelector(`input[data-r="${_activeCell.r}"][data-c="${_activeCell.c}"]`);
+  document.querySelector('.active-cell')?.classList.remove('active-cell');
+  activeInput?.closest('td')?.classList.add('active-cell');
   updateStatus();
 }
 
