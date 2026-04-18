@@ -339,7 +339,7 @@
     padding: 0;
     height: calc(20px * var(--sheet-zoom));
     font-family: Calibri, Carlito, Arial, sans-serif;
-    font-size: calc(11pt * var(--sheet-zoom));
+    font-size: calc(11px * var(--sheet-zoom));
     position: relative;
     overflow: visible;
     -webkit-font-smoothing: subpixel-antialiased;
@@ -1570,7 +1570,7 @@ function styleForMeasuredCell(rowIdx, colIdx) {
 }
 
 function measureFontFromStyle(st, fallbackPx = 16, fallbackWeight = '400') {
-  const fontSizePx = st?.fontSize ? Math.round(st.fontSize * 96 / 72 * (_zoomPercent / 100)) : Math.round(fallbackPx * (_zoomPercent / 100));
+  const fontSizePx = st?.fontSize ? Math.round(st.fontSize * (_zoomPercent / 100)) : Math.round(fallbackPx * (_zoomPercent / 100));
   const fontWeight = st?.bold ? '700' : fallbackWeight;
   const fontStyle = st?.italic ? 'italic' : 'normal';
   const fontFamily = st?.fontFamily ? `${st.fontFamily}, Carlito, Arial, sans-serif` : 'Calibri, Carlito, Arial, sans-serif';
@@ -1769,7 +1769,7 @@ function autoResize() {
 
   S.headers.forEach((header, c) => {
     const headerStyle = _cellStyles?.headerStyles?.[c] || null;
-    _measureCtx.font = measureFontFromStyle({ ...(headerStyle || {}), bold: true }, 13, '700');
+    _measureCtx.font = measureFontFromStyle({ ...(headerStyle || {}), bold: true }, 11, '700');
     const headerMerge = headerMergeMap.starts.get(mergeKey('header', 0, c));
     const headerPx = _measureCtx.measureText(header).width / (headerMerge?.colspan || 1);
     let maxPx = 0;
@@ -1784,7 +1784,7 @@ function autoResize() {
       if (!text) continue;
       sawBodyValue = true;
       if (numericCellValue(text) == null) sawNonNumericBodyValue = true;
-      _measureCtx.font = measureFontFromStyle(styleForMeasuredCell(r, c), 15, '400');
+      _measureCtx.font = measureFontFromStyle(styleForMeasuredCell(r, c), 11, '400');
       const w = _measureCtx.measureText(text).width / span;
       if (w > maxPx) maxPx = w;
     }
@@ -2014,7 +2014,7 @@ function applyExcelStyle(td, inp, st) {
   if (st.italic)     { td.style.fontStyle  = 'italic'; if (inp) inp.style.fontStyle  = 'italic'; }
   if (st.strike)     { td.style.textDecoration = 'line-through'; if (inp) inp.style.textDecoration = 'line-through'; }
   if (st.fontFamily) { td.style.fontFamily = st.fontFamily + ', Carlito, Arial, sans-serif'; if (inp) inp.style.fontFamily = st.fontFamily + ', Carlito, Arial, sans-serif'; }
-  if (st.fontSize)   { const size = `calc(${st.fontSize}pt * var(--sheet-zoom))`; td.style.fontSize = size; if (inp) inp.style.fontSize = size; }
+  if (st.fontSize)   { const size = `calc(${st.fontSize}px * var(--sheet-zoom))`; td.style.fontSize = size; if (inp) inp.style.fontSize = size; }
   if (st.align)      { td.style.textAlign = st.align;  if (inp) inp.style.textAlign  = st.align; }
   else if (inp)      { inp.style.textAlign = td.style.textAlign || 'inherit'; }
 }
