@@ -318,6 +318,11 @@
 
   thead th.selected-col { background: #a8c4e8; }
   tbody td.selected-col { background: rgba(100,160,255,.10); }
+  tbody td.active-cell {
+    outline: 2px solid #1a73e8;
+    outline-offset: -2px;
+    z-index: 1;
+  }
   tbody tr.selected-row td.selected-col { background: rgba(80,140,255,.30) !important; }
   tbody tr.sheet-header-row td {
     background: #dce8f7;
@@ -936,6 +941,8 @@ let selectedCols = new Set();   // indices of selected columns
 let anchorRow = -1;             // shift-click anchor
 let anchorCol = -1;
 let _pendingMouseEvent = null;  // mousedown captured before focus fires
+let _activeCell = { r: -1, c: -1 };  // selected-but-not-editing cell
+let _editingOriginalValue = null;     // value before edit started, for Escape cancel
 let sortCol = -1;
 let sortAsc = true;
 let searchTerm = '';
@@ -2258,10 +2265,27 @@ function renderRows() {
         displayLayer.style.width = displaySpillWidth(r, c, colSpan) + 'px';
         td.classList.add('has-display-overlay');
       };
-      td.addEventListener('mousedown', (e) => { _pendingMouseEvent = e; });
+      td.addEventListener('mousedown', (e) => {
+        _pendingMouseEvent = e;
+        if (td.classList.contains('editing')) return; // allow cursor positioning inside active edit
+        const active = document.activeElement;
+        if (active && active.tagName === 'INPUT' && active !== inp && active.closest('#table-body')) {
+          active.blur();
+        }
+        e.preventDefault();
+        if (e.shiftKey || e.metaKey || e.ctrlKey) {
+          selectCell(r, c, e);
+          // keep _activeCell at original anchor for multi-select
+        } else {
+          setActiveCell(r, c);
+        }
+      });
+      td.addEventListener('dblclick', () => {
+        enterEditMode(r, c);
+      });
       inp.addEventListener('focus', () => {
-        selectCell(r, c, _pendingMouseEvent);
         _pendingMouseEvent = null;
+        _editingOriginalValue = S.rows[r][c] ?? '';
         td.classList.add('editing');
         if (isFormulaValue(S.rows[r][c])) inp.value = S.rows[r][c];
       });
@@ -2393,13 +2417,24 @@ function onCellKeyDown(e) {
   const rows = S.rows.length;
   let nr = r, nc = c;
 
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    // Restore original value and exit edit mode
+    S.rows[r][c] = _editingOriginalValue ?? '';
+    e.target.value = displayCellText(r, c);
+    e.target.dispatchEvent(new Event('input'));
+    e.target.blur();
+    setActiveCell(r, c);
+    return;
+  }
+
   if (e.key === 'Tab') {
     e.preventDefault();
     nc = e.shiftKey ? c - 1 : c + 1;
     if (nc < 0)  { nc = cols - 1; nr = r - 1; }
     if (nc >= cols) { nc = 0; nr = r + 1; }
-  } else if (e.key === 'ArrowDown'  && !e.altKey) { nr = r + 1; }
-    else if (e.key === 'ArrowUp'    && !e.altKey) { nr = r - 1; }
+  } else if (e.key === 'ArrowDown' && !e.altKey) { nr = r + 1; }
+    else if (e.key === 'ArrowUp'   && !e.altKey) { nr = r - 1; }
     else if (e.key === 'Enter') {
       e.preventDefault();
       nr = e.shiftKey ? r - 1 : r + 1;
@@ -2407,7 +2442,8 @@ function onCellKeyDown(e) {
 
   nr = Math.max(0, Math.min(nr, rows - 1));
   nc = Math.max(0, Math.min(nc, cols - 1));
-  focusCell(nr, nc);
+  e.target.blur();
+  setActiveCell(nr, nc);
 }
 
 function onKeyDown(e) {
@@ -2417,6 +2453,45 @@ function onKeyDown(e) {
       modalCancel();
     }
     return;
+  }
+
+  // Cell navigation / edit entry when a cell is selected but not being edited
+  const _isEditingCell = document.activeElement?.tagName === 'INPUT'
+    && !!document.activeElement.closest('#table-body');
+  if (!_isEditingCell && _activeCell.r >= 0) {
+    const { r, c } = _activeCell;
+    const rows = S.rows.length, cols = S.headers.length;
+    if (e.key === 'ArrowDown' && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); setActiveCell(Math.min(r + 1, rows - 1), c); return;
+    }
+    if (e.key === 'ArrowUp' && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); setActiveCell(Math.max(r - 1, 0), c); return;
+    }
+    if (e.key === 'ArrowRight' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); setActiveCell(r, Math.min(c + 1, cols - 1)); return;
+    }
+    if (e.key === 'ArrowLeft' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); setActiveCell(r, Math.max(c - 1, 0)); return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (e.shiftKey) setActiveCell(r, Math.max(c - 1, 0));
+      else setActiveCell(r, Math.min(c + 1, cols - 1));
+      return;
+    }
+    if (e.key === 'Enter') { e.preventDefault(); enterEditMode(r, c); return; }
+    if (e.key === 'F2')    { e.preventDefault(); enterEditMode(r, c); return; }
+    if (e.key === 'Escape') { e.preventDefault(); _activeCell = { r: -1, c: -1 }; document.querySelector('.active-cell')?.classList.remove('active-cell'); return; }
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      S.rows[r][c] = '';
+      const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+      if (inp) { inp.value = ''; inp.dispatchEvent(new Event('input')); }
+      return;
+    }
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault(); enterEditMode(r, c, e.key); return;
+    }
   }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); newDocument(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
@@ -2439,18 +2514,40 @@ function onKeyDown(e) {
   if ((e.metaKey || e.ctrlKey) && e.altKey && e.shiftKey && e.key.toLowerCase() === 'm') { e.preventDefault(); unmergeSelection(); return; }
   if ((e.metaKey || e.ctrlKey) && e.altKey && e.key.toLowerCase() === 'a') { e.preventDefault(); autoResize(); return; }
   if ((e.metaKey || e.ctrlKey) && e.altKey && e.key.toLowerCase() === 'l') { e.preventDefault(); clearSheetColors(); return; }
-  if (e.key === 'F2') { e.preventDefault(); renameColumn(); return; }
+  if (e.key === 'F2' && !_isEditingCell && _activeCell.r < 0) { e.preventDefault(); renameColumn(); return; }
   if (e.key === 'Escape' && _inlineDiff) { e.preventDefault(); clearInlineDiff(); }
   if (e.key === 'Escape') closeMenus();
 }
 
-function focusCell(r, c) {
-  // Set selection directly (keyboard nav = single-select, no mouse event)
+function setActiveCell(r, c) {
+  if (!S.rows.length) return;
+  r = Math.max(0, Math.min(r, S.rows.length - 1));
+  c = Math.max(0, Math.min(c, S.headers.length - 1));
+  document.querySelector('.active-cell')?.classList.remove('active-cell');
+  _activeCell = { r, c };
   selectedRows = new Set([r]); anchorRow = r;
   selectedCols = new Set([c]); anchorCol = c;
+  updateSelectionUI();
   const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
-  if (inp) { inp.focus(); inp.select(); }
-  // focus will fire selectCell(r,c,null) which collapses to single-select — that's fine
+  inp?.closest('td')?.classList.add('active-cell');
+}
+
+function enterEditMode(r, c, replaceWith) {
+  setActiveCell(r, c);
+  const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+  if (!inp) return;
+  inp.focus();
+  if (replaceWith !== undefined) {
+    inp.value = replaceWith;
+    inp.dispatchEvent(new Event('input'));
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+  } else {
+    inp.select();
+  }
+}
+
+function focusCell(r, c) {
+  enterEditMode(r, c);
 }
 
 // ── Data operations ────────────────────────────────────────────────────────
