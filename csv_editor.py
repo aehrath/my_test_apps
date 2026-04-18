@@ -447,7 +447,7 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             message='Slicer List extension is not supported and will be removed',
             category=UserWarning,
         )
-        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
     theme_colors = _parse_theme_colors(wb)
     image_map = _parse_xlsx_images(raw_bytes)
     sheets = []
@@ -788,7 +788,7 @@ def _parse_xlsx(raw_bytes):
             message='Slicer List extension is not supported and will be removed',
             category=UserWarning,
         )
-        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
     ws = wb.active
     if ws is None:
         # Workbook has no active sheet — try first sheet
