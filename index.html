@@ -3062,18 +3062,42 @@ function setActiveCell(r, c) {
   updateSelectionUI();
   const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
   inp?.closest('td')?.classList.add('active-cell');
+  // Keep virtual-scroll viewport centred on the active row
+  if (!inp) scrollRowIntoView(r);
+}
+
+function scrollRowIntoView(r) {
+  const wrap = document.getElementById('table-wrap');
+  if (!wrap) return;
+  const rowHeight = estimatedBodyRowHeight();
+  const rowTop = r * rowHeight;
+  const rowBottom = rowTop + rowHeight;
+  if (rowTop < wrap.scrollTop) {
+    wrap.scrollTop = rowTop;
+  } else if (rowBottom > wrap.scrollTop + wrap.clientHeight) {
+    wrap.scrollTop = rowBottom - wrap.clientHeight;
+  }
 }
 
 function enterEditMode(r, c, replaceWith) {
   setActiveCell(r, c);
-  const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+  let inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+  if (!inp) {
+    // Cell is outside the virtual scroll window — force a synchronous re-render
+    scrollRowIntoView(r);
+    renderRows();
+    inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+  }
   if (!inp) return;
+  const td = inp.closest('td');
+  td?.classList.add('editing');
   inp.focus();
   if (replaceWith !== undefined) {
     inp.value = replaceWith;
     inp.dispatchEvent(new Event('input'));
     inp.setSelectionRange(inp.value.length, inp.value.length);
   } else {
+    if (isFormulaValue(S.rows[r]?.[c])) inp.value = S.rows[r][c];
     inp.select();
   }
 }
