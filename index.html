@@ -1226,7 +1226,7 @@ function matchCriteria(value, criteria) {
 function evalFormulaExpression(expr, context = new Set()) {
   const trimmed = expr.trim();
   if (trimmed === '') return '';
-  if (/^".*"$/.test(trimmed)) return trimmed.slice(1, -1).replace(/""/g, '"');
+  if (/^"([^"]|"")*"$/.test(trimmed)) return trimmed.slice(1, -1).replace(/""/g, '"');
   if (/^\$?[A-Z]+\$?\d+:\$?[A-Z]+\$?\d+$/i.test(trimmed)) {
     const [a, b] = trimmed.split(':');
     return expandRange(a, b).map(({ row, col }) => evaluateCellValue(row, col, context));
@@ -1285,6 +1285,16 @@ function evalFormulaExpression(expr, context = new Set()) {
       }
       return total;
     }
+    if (name === 'XLOOKUP') {
+      const toKey = v => v == null ? '' : String(v);
+      const lookupVal = args[0];
+      const lookupKey = Array.isArray(lookupVal) ? toKey(lookupVal[0]) : toKey(lookupVal);
+      const lookupArr = flattenFormulaArgs([args[1]]);
+      const returnArr = flattenFormulaArgs([args[2]]);
+      const ifNotFound = args.length > 3 ? args[3] : '';
+      const idx = lookupArr.findIndex(v => toKey(v) === lookupKey);
+      return idx >= 0 ? (parseScalarValue(returnArr[idx]) ?? '') : (parseScalarValue(ifNotFound) ?? '');
+    }
     return '';
   }
 
@@ -1307,6 +1317,28 @@ function evalFormulaExpression(expr, context = new Set()) {
         if (op === '>') return cmp > 0;
         if (op === '<=') return cmp <= 0;
         if (op === '>=') return cmp >= 0;
+      }
+    }
+  }
+
+  // & string concatenation (element-wise on arrays)
+  {
+    let depth = 0, inStr = false;
+    for (let i = 0; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (depth === 0 && ch === '&') {
+        const left = evalFormulaExpression(trimmed.slice(0, i), context);
+        const right = evalFormulaExpression(trimmed.slice(i + 1), context);
+        const toStr = v => v == null ? '' : String(v);
+        if (Array.isArray(left) && Array.isArray(right))
+          return left.map((v, j) => toStr(v) + toStr(right[j] ?? ''));
+        if (Array.isArray(left)) return left.map(v => toStr(v) + toStr(right));
+        if (Array.isArray(right)) return right.map(v => toStr(left) + toStr(v));
+        return toStr(left) + toStr(right);
       }
     }
   }
