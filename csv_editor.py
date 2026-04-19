@@ -447,7 +447,7 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             message='Slicer List extension is not supported and will be removed',
             category=UserWarning,
         )
-        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
     theme_colors = _parse_theme_colors(wb)
     image_map = _parse_xlsx_images(raw_bytes)
     sheets = []
@@ -469,7 +469,10 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
             row_styles = []
             for c in range(1, max_col + 1):
                 cell = ws.cell(r, c)
-                row_vals.append(_cell_to_str_formatted(cell.value, cell.number_format))
+                if cell.data_type == 'f':
+                    row_vals.append(cell.value or '')
+                else:
+                    row_vals.append(_cell_to_str_formatted(cell.value, cell.number_format))
                 st = {}
                 fill = cell.fill
                 font = cell.font
@@ -796,7 +799,7 @@ def _parse_xlsx(raw_bytes):
             message='Slicer List extension is not supported and will be removed',
             category=UserWarning,
         )
-        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+        wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
     ws = wb.active
     if ws is None:
         # Workbook has no active sheet — try first sheet
@@ -805,7 +808,7 @@ def _parse_xlsx(raw_bytes):
         ws = wb[wb.sheetnames[0]]
     all_rows = []
     for row in ws.iter_rows(values_only=False):
-        cells = [_cell_to_str(cell.value) for cell in row]
+        cells = [cell.value if cell.data_type == 'f' else _cell_to_str(cell.value) for cell in row]
         # Skip rows that are entirely blank
         if any(v != '' for v in cells):
             all_rows.append(cells)
