@@ -476,6 +476,8 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
                 else:
                     row_vals.append(_cell_to_str_formatted(cell.value, cell.number_format))
                 st = {}
+                if cell.number_format and cell.number_format not in ('General', '@', ''):
+                    st['numFmt'] = cell.number_format
                 fill = cell.fill
                 font = cell.font
                 align = cell.alignment

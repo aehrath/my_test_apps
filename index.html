@@ -1086,6 +1086,17 @@ function isFormulaValue(val) {
   return typeof val === 'string' && val.startsWith('=');
 }
 
+function applyNumFmt(value, fmt) {
+  if (typeof value !== 'number' || isNaN(value)) return null;
+  const section = fmt.split(';')[0] || fmt;
+  const isPct = section.includes('%');
+  const num = isPct ? value * 100 : value;
+  const m = section.match(/\.([0#]+)/);
+  const dp = m ? m[1].length : 0;
+  const result = dp > 0 ? num.toFixed(dp) : String(Math.round(num));
+  return isPct ? result + '%' : result;
+}
+
 function formatCellValue(value) {
   if (value == null) return '';
   if (value instanceof Date && !isNaN(value)) {
@@ -1371,7 +1382,9 @@ function displayCellText(r, c) {
   if (!_formulaCache) _formulaCache = new Map();
   const key = `${r},${c}`;
   if (_formulaCache.has(key)) return _formulaCache.get(key);
-  const result = formatCellValue(evaluateCellValue(r, c));
+  const evaluated = evaluateCellValue(r, c);
+  const st = bodyCellStyle(r, c);
+  const result = (st?.numFmt ? applyNumFmt(evaluated, st.numFmt) : null) ?? formatCellValue(evaluated);
   _formulaCache.set(key, result);
   return result;
 }
