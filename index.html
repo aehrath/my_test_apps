@@ -2319,10 +2319,10 @@ function displaySpillWidth(rowIdx, colIdx, colSpan, bodyMergeMap = null, merges 
 }
 
 function estimatedBodyRowHeight() {
-  const sample = document.querySelector('#table-body tr td:not(.row-num)');
+  const sample = document.querySelector('#table-body tr:not(.virtual-spacer) td:not(.row-num)');
   const measured = sample?.getBoundingClientRect?.().height;
   if (measured && Number.isFinite(measured) && measured > 0) return measured;
-  return Math.max(22, Math.round(22 * (_zoomPercent / 100)));
+  return Math.max(20, Math.round(20 * (_zoomPercent / 100)));
 }
 
 function shouldVirtualizeRows(visibleRows, merges) {
@@ -2391,7 +2391,9 @@ function syncTdDisplayLayer(td, merges, mergeMap) {
 
 function renderRows() {
   const tbody = document.getElementById('table-body');
+  const wrap = document.getElementById('table-wrap');
   const rowHeight = estimatedBodyRowHeight();
+  const savedScrollTop = wrap?.scrollTop || 0;
   tbody.innerHTML = '';
   const merges = normalizedSheetMerges();
   const mergeMap = buildMergeMaps('body', merges);
@@ -2469,12 +2471,10 @@ function renderRows() {
   let startItem = 0;
   let endItem = displayItems.length;
   if (virtualized) {
-    const wrap = document.getElementById('table-wrap');
     const buffer = 12;
-    const scrollTop = wrap?.scrollTop || 0;
     const viewportHeight = wrap?.clientHeight || 0;
-    startItem = Math.max(0, Math.floor(scrollTop / rowHeight) - buffer);
-    endItem = Math.min(displayItems.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + buffer);
+    startItem = Math.max(0, Math.floor(savedScrollTop / rowHeight) - buffer);
+    endItem = Math.min(displayItems.length, Math.ceil((savedScrollTop + viewportHeight) / rowHeight) + buffer);
     if (startItem > 0) frag.appendChild(createVirtualSpacerRow(startItem * rowHeight, S.headers.length + 1));
   }
 
@@ -2564,6 +2564,7 @@ function renderRows() {
     frag.appendChild(createVirtualSpacerRow((displayItems.length - endItem) * rowHeight, S.headers.length + 1));
   }
   tbody.appendChild(frag);
+  if (virtualized && wrap && wrap.scrollTop !== savedScrollTop) wrap.scrollTop = savedScrollTop;
 }
 
 function th(text, cls) {
