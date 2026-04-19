@@ -1029,6 +1029,15 @@ let _headerFilterState = null;
 let _tableScrollRaf = 0;
 const _versionDataCache = new Map();
 const _parsedVersionCache = new Map();
+let _formulaCache = null;          // Map<"r,c", string> — cleared on data change
+let _filteredRowsCache = null;     // cached getFilteredRowIndexes() result
+let _conditionalStyleCache = undefined; // undefined=unset, null=none, Map=result
+
+function _invalidateCaches() {
+  _formulaCache = null;
+  _filteredRowsCache = null;
+  _conditionalStyleCache = undefined;
+}
 
 function toggleFileMenu(e) {
   e?.stopPropagation();
@@ -1327,7 +1336,12 @@ function evaluateCellValue(r, c, context = new Set()) {
 function displayCellText(r, c) {
   const raw = getRawCellValue(r, c);
   if (!isFormulaValue(raw)) return raw != null ? raw : '';
-  return formatCellValue(evaluateCellValue(r, c));
+  if (!_formulaCache) _formulaCache = new Map();
+  const key = `${r},${c}`;
+  if (_formulaCache.has(key)) return _formulaCache.get(key);
+  const result = formatCellValue(evaluateCellValue(r, c));
+  _formulaCache.set(key, result);
+  return result;
 }
 
 function refreshVisibleFormulaDisplays() {
@@ -1504,10 +1518,85 @@ async function parseXlsxBuffer(buf) {
   document.addEventListener('mouseup', endCellDragSelection);
   document.getElementById('table-wrap')?.addEventListener('scroll', onTableScroll, { passive: true });
   window.addEventListener('blur', endCellDragSelection);
+
+  // ── Delegated table-body events (replaces per-cell listeners) ──────────────
+  const tbody = document.getElementById('table-body');
+  tbody.addEventListener('mousedown', (e) => {
+    const rn = e.target.closest('.row-num');
+    if (rn) {
+      const tr = rn.closest('tr[data-row-index]');
+      if (tr) { e.preventDefault(); selectRow(+tr.dataset.rowIndex, e); }
+      return;
+    }
+    const td = e.target.closest('td[data-row-start][data-col-start]');
+    if (!td) return;
+    const r = +(td.dataset.rowStart || 0);
+    const c = +(td.dataset.colStart || 0);
+    const inp = td.querySelector('input[data-r]');
+    _pendingMouseEvent = e;
+    if (td.classList.contains('editing')) return;
+    const active = document.activeElement;
+    if (active && active.tagName === 'INPUT' && active !== inp && active.closest('#table-body')) active.blur();
+    e.preventDefault();
+    if (e.shiftKey || e.metaKey || e.ctrlKey) { selectCell(r, c, e); }
+    else { setActiveCell(r, c); beginCellDragSelection(r, c); }
+  });
+  tbody.addEventListener('mouseover', (e) => {
+    if (!_dragSelection || (e.buttons & 1) !== 1) return;
+    const td = e.target.closest('td[data-row-start][data-col-start]');
+    if (!td || td.classList.contains('editing')) return;
+    updateCellDragSelection(+(td.dataset.rowStart || 0), +(td.dataset.colStart || 0));
+  });
+  tbody.addEventListener('dblclick', (e) => {
+    const td = e.target.closest('td[data-row-start][data-col-start]');
+    if (td) enterEditMode(+(td.dataset.rowStart || 0), +(td.dataset.colStart || 0));
+  });
+  tbody.addEventListener('focusin', (e) => {
+    const inp = e.target;
+    if (inp.tagName !== 'INPUT' || !inp.dataset.r) return;
+    const r = +inp.dataset.r; const c = +inp.dataset.c;
+    const td = inp.closest('td');
+    _pendingMouseEvent = null;
+    _editingOriginalValue = S.rows[r]?.[c] ?? '';
+    td?.classList.add('editing');
+    if (isFormulaValue(S.rows[r]?.[c])) inp.value = S.rows[r][c];
+  });
+  tbody.addEventListener('focusout', (e) => {
+    const inp = e.target;
+    if (inp.tagName !== 'INPUT' || !inp.dataset.r) return;
+    const td = inp.closest('td');
+    td?.classList.remove('editing');
+    if (td) syncTdDisplayLayer(td);
+    setTimeout(() => refreshVisibleFormulaDisplays(), 0);
+  });
+  tbody.addEventListener('input', (e) => {
+    const inp = e.target;
+    if (inp.tagName !== 'INPUT' || !inp.dataset.r) return;
+    const r = +inp.dataset.r; const c = +inp.dataset.c;
+    const td = inp.closest('td');
+    S.rows[r][c] = inp.value;
+    markModified();
+    const bv = baselineVal(r, c);
+    td?.classList.toggle('cell-modified', bv === undefined || inp.value !== bv);
+    const entry = _inlineDiff?.mapping?.[r];
+    if (entry?.type === 'changed') {
+      const commitVal = entry.commitRow?.[c] ?? '';
+      const changed = inp.value !== commitVal;
+      td?.classList.toggle('cell-diff-changed', changed);
+      const oldValLabel = td?.querySelector('.old-val');
+      if (oldValLabel) oldValLabel.style.display = changed ? '' : 'none';
+    }
+    if (td) syncTdDisplayLayer(td);
+    refreshVisibleFormulaDisplays();
+  });
+  tbody.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' && e.target.dataset.r) onCellKeyDown(e);
+  });
 })();
 
 // ── Rendering ──────────────────────────────────────────────────────────────
 function render() {
+  _invalidateCaches();
   renderHeaders();
   autoResize(true);
   renderRows();
@@ -1939,8 +2028,12 @@ function activeColumnFilters() {
 }
 
 function getFilteredRowIndexes() {
+  if (_filteredRowsCache) return _filteredRowsCache;
   const filters = activeColumnFilters();
-  if (!filters.length) return S.rows.map((_, idx) => idx);
+  if (!filters.length) {
+    _filteredRowsCache = S.rows.map((_, idx) => idx);
+    return _filteredRowsCache;
+  }
   const out = [];
   rowLoop:
   for (let idx = 0; idx < S.rows.length; idx++) {
@@ -1951,6 +2044,7 @@ function getFilteredRowIndexes() {
     }
     out.push(idx);
   }
+  _filteredRowsCache = out;
   return out;
 }
 
@@ -2145,7 +2239,8 @@ function numericCellValue(value) {
 }
 
 function buildConditionalStyleLookup() {
-  if (!_conditionalFormats?.length) return null;
+  if (_conditionalStyleCache !== undefined) return _conditionalStyleCache;
+  if (!_conditionalFormats?.length) { _conditionalStyleCache = null; return null; }
   const lookup = new Map();
   _conditionalFormats.forEach(rule => {
     if (rule.type !== 'top10') return;
@@ -2167,6 +2262,7 @@ function buildConditionalStyleLookup() {
       lookup.set(key, merged);
     });
   });
+  _conditionalStyleCache = lookup;
   return lookup;
 }
 
@@ -2224,14 +2320,16 @@ function displaySpillWidth(rowIdx, colIdx, colSpan, bodyMergeMap = null, merges 
 }
 
 function estimatedBodyRowHeight() {
-  const sample = document.querySelector('#table-body tr td:not(.row-num)');
+  const sample = document.querySelector('#table-body tr:not(.virtual-spacer) td:not(.row-num)');
   const measured = sample?.getBoundingClientRect?.().height;
   if (measured && Number.isFinite(measured) && measured > 0) return measured;
-  return Math.max(22, Math.round(22 * (_zoomPercent / 100)));
+  return Math.max(20, Math.round(20 * (_zoomPercent / 100)));
 }
 
 function shouldVirtualizeRows(visibleRows, merges) {
-  return false;
+  if (visibleRows.length <= 300) return false;
+  // Rowspan merges break uniform-height virtualization
+  return !merges.some(m => m.area === 'body' && (m.rowspan || 1) > 1);
 }
 
 function createVirtualSpacerRow(height, colCount) {
@@ -2260,8 +2358,43 @@ function onTableScroll() {
   });
 }
 
+function syncTdDisplayLayer(td, merges, mergeMap) {
+  const inp = td.querySelector('input[data-r]');
+  if (!inp) return;
+  const r = +inp.dataset.r;
+  const c = +inp.dataset.c;
+  const colSpan = +(td.dataset.colSpan || 1);
+  const baseStyle = _cellStyles?.rowStyles?.[r]?.[c];
+  const conditionalStyle = conditionalStyleForCell(r, c);
+  const st = conditionalStyle ? { ...(baseStyle || {}), ...conditionalStyle } : baseStyle;
+  const align = st?.align || td.style.textAlign || '';
+  const displayText = displayCellText(r, c);
+  const oldValLabel = td.querySelector('.old-val');
+  const shouldOverlay = !!displayText && !oldValLabel && colSpan === 1 && align !== 'right' && align !== 'center';
+  let displayLayer = td.querySelector('.cell-display');
+  if (!shouldOverlay) {
+    if (displayLayer) displayLayer.remove();
+    td.classList.remove('has-display-overlay');
+    return;
+  }
+  if (!displayLayer) {
+    displayLayer = document.createElement('span');
+    displayLayer.className = 'cell-display';
+    if (inp.parentNode === td) td.insertBefore(displayLayer, inp);
+    else td.appendChild(displayLayer);
+  }
+  if (!merges) merges = normalizedSheetMerges();
+  if (!mergeMap) mergeMap = buildMergeMaps('body', merges);
+  displayLayer.textContent = displayText;
+  displayLayer.style.width = displaySpillWidth(r, c, colSpan, mergeMap, merges) + 'px';
+  td.classList.add('has-display-overlay');
+}
+
 function renderRows() {
   const tbody = document.getElementById('table-body');
+  const wrap = document.getElementById('table-wrap');
+  const rowHeight = estimatedBodyRowHeight();
+  const savedScrollTop = wrap?.scrollTop || 0;
   tbody.innerHTML = '';
   const merges = normalizedSheetMerges();
   const mergeMap = buildMergeMaps('body', merges);
@@ -2270,7 +2403,6 @@ function renderRows() {
   const visibleRows = getFilteredRowIndexes();
   const headerIdx = sheetHeaderRowIndex();
   const virtualized = shouldVirtualizeRows(visibleRows, merges);
-  const rowHeight = estimatedBodyRowHeight();
   const frag = document.createDocumentFragment();
 
   // Index incoming (new-in-commit) rows by the current-row index they appear before
@@ -2340,12 +2472,10 @@ function renderRows() {
   let startItem = 0;
   let endItem = displayItems.length;
   if (virtualized) {
-    const wrap = document.getElementById('table-wrap');
     const buffer = 12;
-    const scrollTop = wrap?.scrollTop || 0;
     const viewportHeight = wrap?.clientHeight || 0;
-    startItem = Math.max(0, Math.floor(scrollTop / rowHeight) - buffer);
-    endItem = Math.min(displayItems.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + buffer);
+    startItem = Math.max(0, Math.floor(savedScrollTop / rowHeight) - buffer);
+    endItem = Math.min(displayItems.length, Math.ceil((savedScrollTop + viewportHeight) / rowHeight) + buffer);
     if (startItem > 0) frag.appendChild(createVirtualSpacerRow(startItem * rowHeight, S.headers.length + 1));
   }
 
@@ -2368,7 +2498,6 @@ function renderRows() {
     rn.className = 'row-num';
     rn.textContent = sheetRowNumberForBodyRow(r);
     rn.title = 'Click • Shift+click to range • Cmd+click to toggle';
-    rn.addEventListener('mousedown', (e) => { e.preventDefault(); selectRow(r, e); });
     tr.appendChild(rn);
 
     S.headers.forEach((h, c) => {
@@ -2392,7 +2521,6 @@ function renderRows() {
       inp.value = displayCellText(r, c);
       inp.dataset.r = r;
       inp.dataset.c = c;
-      let displayLayer = null;
 
       // Baseline (unsaved-edit) highlight — compare raw stored value, not display value,
       // so formula cells (which display their result) aren't falsely flagged as modified.
@@ -2418,77 +2546,6 @@ function renderRows() {
       const baseStyle = _cellStyles?.rowStyles?.[r]?.[c];
       const conditionalStyle = conditionalStyleForCell(r, c, conditionalStyles);
       const st = conditionalStyle ? { ...(baseStyle || {}), ...conditionalStyle } : baseStyle;
-      const syncDisplayLayer = () => {
-        const align = st?.align || td.style.textAlign || '';
-        const displayText = displayCellText(r, c);
-        const shouldOverlay = !!displayText && !oldValLabel && colSpan === 1 && align !== 'right' && align !== 'center';
-        if (!shouldOverlay) {
-          if (displayLayer) {
-            displayLayer.remove();
-            displayLayer = null;
-          }
-          td.classList.remove('has-display-overlay');
-          return;
-        }
-        if (!displayLayer) {
-          displayLayer = document.createElement('span');
-          displayLayer.className = 'cell-display';
-          if (inp.parentNode === td) td.insertBefore(displayLayer, inp);
-          else td.appendChild(displayLayer);
-        }
-        displayLayer.textContent = displayText;
-        displayLayer.style.width = displaySpillWidth(r, c, colSpan, mergeMap, merges) + 'px';
-        td.classList.add('has-display-overlay');
-      };
-      td.addEventListener('mousedown', (e) => {
-        _pendingMouseEvent = e;
-        if (td.classList.contains('editing')) return; // allow cursor positioning inside active edit
-        const active = document.activeElement;
-        if (active && active.tagName === 'INPUT' && active !== inp && active.closest('#table-body')) {
-          active.blur();
-        }
-        e.preventDefault();
-        if (e.shiftKey || e.metaKey || e.ctrlKey) {
-          selectCell(r, c, e);
-          // keep _activeCell at original anchor for multi-select
-        } else {
-          setActiveCell(r, c);
-          beginCellDragSelection(r, c);
-        }
-      });
-      td.addEventListener('mouseenter', (e) => {
-        if (!_dragSelection || td.classList.contains('editing') || (e.buttons & 1) !== 1) return;
-        updateCellDragSelection(r, c);
-      });
-      td.addEventListener('dblclick', () => {
-        enterEditMode(r, c);
-      });
-      inp.addEventListener('focus', () => {
-        _pendingMouseEvent = null;
-        _editingOriginalValue = S.rows[r][c] ?? '';
-        td.classList.add('editing');
-        if (isFormulaValue(S.rows[r][c])) inp.value = S.rows[r][c];
-      });
-      inp.addEventListener('blur', () => {
-        td.classList.remove('editing');
-        syncDisplayLayer();
-        setTimeout(() => refreshVisibleFormulaDisplays(), 0);
-      });
-      inp.addEventListener('input', () => {
-        S.rows[r][c] = inp.value;
-        markModified();
-        const bv = baselineVal(r, c);
-        td.classList.toggle('cell-modified', bv === undefined || inp.value !== bv);
-        if (entry?.type === 'changed') {
-          const commitVal = entry.commitRow?.[c] ?? '';
-          const changed = inp.value !== commitVal;
-          td.classList.toggle('cell-diff-changed', changed);
-          if (oldValLabel) oldValLabel.style.display = changed ? '' : 'none';
-        }
-        syncDisplayLayer();
-        refreshVisibleFormulaDisplays();
-      });
-      inp.addEventListener('keydown', onCellKeyDown);
       if (oldValLabel) td.appendChild(oldValLabel);
       td.appendChild(inp);
       tr.appendChild(td);
@@ -2498,7 +2555,7 @@ function renderRows() {
         td.style.textAlign = 'right';
         inp.style.textAlign = 'right';
       }
-      syncDisplayLayer();
+      syncTdDisplayLayer(td, merges, mergeMap);
     });
 
     frag.appendChild(tr);
@@ -2508,6 +2565,7 @@ function renderRows() {
     frag.appendChild(createVirtualSpacerRow((displayItems.length - endItem) * rowHeight, S.headers.length + 1));
   }
   tbody.appendChild(frag);
+  if (virtualized && wrap && wrap.scrollTop !== savedScrollTop) wrap.scrollTop = savedScrollTop;
 }
 
 function th(text, cls) {
@@ -3005,18 +3063,42 @@ function setActiveCell(r, c) {
   updateSelectionUI();
   const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
   inp?.closest('td')?.classList.add('active-cell');
+  // Keep virtual-scroll viewport centred on the active row
+  if (!inp) scrollRowIntoView(r);
+}
+
+function scrollRowIntoView(r) {
+  const wrap = document.getElementById('table-wrap');
+  if (!wrap) return;
+  const rowHeight = estimatedBodyRowHeight();
+  const rowTop = r * rowHeight;
+  const rowBottom = rowTop + rowHeight;
+  if (rowTop < wrap.scrollTop) {
+    wrap.scrollTop = rowTop;
+  } else if (rowBottom > wrap.scrollTop + wrap.clientHeight) {
+    wrap.scrollTop = rowBottom - wrap.clientHeight;
+  }
 }
 
 function enterEditMode(r, c, replaceWith) {
   setActiveCell(r, c);
-  const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+  let inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+  if (!inp) {
+    // Cell is outside the virtual scroll window — force a synchronous re-render
+    scrollRowIntoView(r);
+    renderRows();
+    inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
+  }
   if (!inp) return;
+  const td = inp.closest('td');
+  td?.classList.add('editing');
   inp.focus();
   if (replaceWith !== undefined) {
     inp.value = replaceWith;
     inp.dispatchEvent(new Event('input', { bubbles: true }));
     inp.setSelectionRange(inp.value.length, inp.value.length);
   } else {
+    if (isFormulaValue(S.rows[r]?.[c])) inp.value = S.rows[r][c];
     inp.select();
   }
 }
@@ -3662,6 +3744,7 @@ async function downloadCSV() { return downloadFile('csv'); }
 // ── Server sync ────────────────────────────────────────────────────────────
 let syncTimer = null;
 function markModified() {
+  _invalidateCaches();
   S.modified = true;
   updateStatus();
   clearTimeout(syncTimer);

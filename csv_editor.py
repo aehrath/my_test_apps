@@ -1290,8 +1290,7 @@ def main():
                     print('Error: openpyxl is required to open .xlsx files.')
                     print('       pip install openpyxl')
                     sys.exit(1)
-                headers, rows = _parse_xlsx(path.read_bytes())
-                state.sheets       = [{'name': 'Sheet1', 'headers': headers, 'rows': rows}]
+                state.sheets       = _parse_xlsx_sheets_with_styles(path.read_bytes())
                 state.active_sheet = 0
                 state.filetype     = 'xlsx'
             elif path.suffix.lower() == '.json':
