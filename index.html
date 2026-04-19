@@ -2889,7 +2889,7 @@ function onCellKeyDown(e) {
     // Restore original value and exit edit mode
     S.rows[r][c] = _editingOriginalValue ?? '';
     e.target.value = displayCellText(r, c);
-    e.target.dispatchEvent(new Event('input'));
+    e.target.dispatchEvent(new Event('input', { bubbles: true }));
     e.target.blur();
     setActiveCell(r, c);
     return;
@@ -2960,7 +2960,7 @@ function onKeyDown(e) {
       e.preventDefault();
       S.rows[r][c] = '';
       const inp = document.querySelector(`input[data-r="${r}"][data-c="${c}"]`);
-      if (inp) { inp.value = ''; inp.dispatchEvent(new Event('input')); }
+      if (inp) { inp.value = ''; inp.dispatchEvent(new Event('input', { bubbles: true })); }
       return;
     }
     if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -3013,7 +3013,7 @@ function enterEditMode(r, c, replaceWith) {
   inp.focus();
   if (replaceWith !== undefined) {
     inp.value = replaceWith;
-    inp.dispatchEvent(new Event('input'));
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
     inp.setSelectionRange(inp.value.length, inp.value.length);
   } else {
     inp.select();
