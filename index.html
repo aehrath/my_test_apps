@@ -2391,6 +2391,7 @@ function syncTdDisplayLayer(td, merges, mergeMap) {
 
 function renderRows() {
   const tbody = document.getElementById('table-body');
+  const rowHeight = estimatedBodyRowHeight();
   tbody.innerHTML = '';
   const merges = normalizedSheetMerges();
   const mergeMap = buildMergeMaps('body', merges);
@@ -2399,7 +2400,6 @@ function renderRows() {
   const visibleRows = getFilteredRowIndexes();
   const headerIdx = sheetHeaderRowIndex();
   const virtualized = shouldVirtualizeRows(visibleRows, merges);
-  const rowHeight = estimatedBodyRowHeight();
   const frag = document.createDocumentFragment();
 
   // Index incoming (new-in-commit) rows by the current-row index they appear before
