@@ -471,7 +471,8 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
                 cell = ws.cell(r, c)
                 if cell.data_type == 'f':
                     v = cell.value
-                    row_vals.append(v.text if hasattr(v, 'text') else (v or ''))
+                    f = v.text if hasattr(v, 'text') else (v or '')
+                    row_vals.append(_re.sub(r'_xlfn\.', '', f))
                 else:
                     row_vals.append(_cell_to_str_formatted(cell.value, cell.number_format))
                 st = {}
@@ -809,7 +810,7 @@ def _parse_xlsx(raw_bytes):
         ws = wb[wb.sheetnames[0]]
     all_rows = []
     for row in ws.iter_rows(values_only=False):
-        cells = [(v.text if hasattr(v := cell.value, 'text') else (v or '')) if cell.data_type == 'f' else _cell_to_str(cell.value) for cell in row]
+        cells = [_re.sub(r'_xlfn\.', '', v.text if hasattr(v := cell.value, 'text') else (v or '')) if cell.data_type == 'f' else _cell_to_str(cell.value) for cell in row]
         # Skip rows that are entirely blank
         if any(v != '' for v in cells):
             all_rows.append(cells)
