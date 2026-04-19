@@ -134,6 +134,19 @@ import re as _re
 import colorsys as _colorsys
 import xml.etree.ElementTree as _ET
 import zipfile as _zipfile
+
+# Register XLSX namespaces so ElementTree serialises them with their original prefixes
+# (without this, Python re-serialises the default namespace as ns0: which Excel rejects)
+for _ns_prefix, _ns_uri in [
+    ('',     'http://schemas.openxmlformats.org/spreadsheetml/2006/main'),
+    ('r',    'http://schemas.openxmlformats.org/officeDocument/2006/relationships'),
+    ('mc',   'http://schemas.openxmlformats.org/markup-compatibility/2006'),
+    ('x14ac','http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac'),
+    ('xr',   'http://schemas.microsoft.com/office/spreadsheetml/2014/revision'),
+    ('xr2',  'http://schemas.microsoft.com/office/spreadsheetml/2015/revision2'),
+    ('xr3',  'http://schemas.microsoft.com/office/spreadsheetml/2016/revision3'),
+]:
+    _ET.register_namespace(_ns_prefix, _ns_uri)
 import posixpath as _ppath
 
 def _cell_to_str(value):
