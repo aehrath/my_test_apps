@@ -2990,10 +2990,7 @@ function onCellKeyDown(e) {
 
   if (e.key === 'Escape') {
     e.preventDefault();
-    // Restore original value and exit edit mode
     S.rows[r][c] = _editingOriginalValue ?? '';
-    e.target.value = displayCellText(r, c);
-    e.target.dispatchEvent(new Event('input', { bubbles: true }));
     e.target.blur();
     setActiveCell(r, c);
     return;
