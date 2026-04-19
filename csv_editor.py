@@ -13,6 +13,7 @@ import json
 import sys
 import threading
 import warnings
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -872,6 +873,14 @@ def save_gh_config():
     )
 
 
+def _ssl_context():
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
+    return ssl._create_unverified_context()
+
 def _gh_api(method, endpoint, data=None):
     """Call GitHub REST API. Returns (result_dict, error_str)."""
     url = 'https://api.github.com' + endpoint
@@ -885,7 +894,7 @@ def _gh_api(method, endpoint, data=None):
         hdrs['Content-Type'] = 'application/json'
     req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, context=_ssl_context()) as r:
             return json.loads(r.read()), None
     except urllib.error.HTTPError as e:
         try:
