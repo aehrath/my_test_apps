@@ -639,10 +639,12 @@ def _set_xml_cell_value(cell_el, value):
 
 
 def _write_xlsx_from_template(raw_bytes, sheets):
+    import re as _re
     ns = {
         'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
         'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
     }
+    main_ns_uri = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
     by_name = {sh.get('name', ''): sh for sh in sheets}
     zin = io.BytesIO(raw_bytes)
     zout = io.BytesIO()
@@ -664,14 +666,14 @@ def _write_xlsx_from_template(raw_bytes, sheets):
                 sheet = by_name.get(sheet_name or '')
                 if sheet:
                     root = _ET.fromstring(data)
-                    sheet_data = root.find('a:sheetData', ns)
-                    if sheet_data is not None:
+                    sheet_data_el = root.find('a:sheetData', ns)
+                    if sheet_data_el is not None:
                         rows = _ordered_sheet_rows(sheet)
-                        max_row = max(len(rows), len(sheet_data.findall('a:row', ns)))
+                        max_row = max(len(rows), len(sheet_data_el.findall('a:row', ns)))
                         max_col = max([len(r) for r in rows] + [0])
                         row_map = {
                             int(row.attrib.get('r', idx + 1)): row
-                            for idx, row in enumerate(sheet_data.findall('a:row', ns))
+                            for idx, row in enumerate(sheet_data_el.findall('a:row', ns))
                         }
                         cell_maps = {}
                         for rnum, row_el in row_map.items():
@@ -681,11 +683,12 @@ def _write_xlsx_from_template(raw_bytes, sheets):
                                 col = ''.join(ch for ch in ref if ch.isalpha())
                                 cmap[col] = cell
                             cell_maps[rnum] = cmap
-                        for child in list(sheet_data):
-                            sheet_data.remove(child)
+
+                        # Build new sheetData element in memory
+                        new_sd = _ET.Element(f'{{{main_ns_uri}}}sheetData')
                         for r in range(1, max_row + 1):
                             old_row = row_map.get(r)
-                            row_el = _ET.Element(old_row.tag if old_row is not None else f'{{{ns["a"]}}}row')
+                            row_el = _ET.Element(old_row.tag if old_row is not None else f'{{{main_ns_uri}}}row')
                             if old_row is not None:
                                 row_el.attrib.update(old_row.attrib)
                             row_el.set('r', str(r))
@@ -698,32 +701,50 @@ def _write_xlsx_from_template(raw_bytes, sheets):
                                 val = values[c] if c < len(values) else ''
                                 if old_cell is None and (val == '' or val is None):
                                     continue
-                                cell_el = _ET.fromstring(_ET.tostring(old_cell)) if old_cell is not None else _ET.Element(f'{{{ns["a"]}}}c')
+                                cell_el = _ET.fromstring(_ET.tostring(old_cell)) if old_cell is not None else _ET.Element(f'{{{main_ns_uri}}}c')
                                 cell_el.set('r', ref)
                                 _set_xml_cell_value(cell_el, val)
                                 row_el.append(cell_el)
-                            sheet_data.append(row_el)
-                        dim = root.find('a:dimension', ns)
-                        if dim is not None and max_row and max_col:
-                            dim.set('ref', f'A1:{_excel_col_name(max_col - 1)}{max_row}')
-                        merge_cells = root.find('a:mergeCells', ns)
-                        if merge_cells is not None:
-                            root.remove(merge_cells)
+                            new_sd.append(row_el)
+
+                        # Serialize sheetData only; strip namespace declarations since root already has them
+                        new_sd_str = _ET.tostring(new_sd, encoding='unicode')
+                        new_sd_str = _re.sub(r' xmlns(?::\w+)?="[^"]*"', '', new_sd_str)
+
+                        # Operate on original XML bytes to preserve root element, namespaces, and attributes exactly
+                        orig_str = data.decode('utf-8')
+
+                        # Replace sheetData (handles both empty <sheetData/> and <sheetData>...</sheetData>)
+                        _new_sd = new_sd_str  # closure for lambda
+                        orig_str = _re.sub(
+                            r'<sheetData(?:\s[^>]*)?>.*?</sheetData>|<sheetData(?:\s[^>]*)?/>',
+                            lambda m: _new_sd, orig_str, flags=_re.DOTALL)
+
+                        # Update dimension ref
+                        if max_row and max_col:
+                            new_dim = f'A1:{_excel_col_name(max_col - 1)}{max_row}'
+                            orig_str = _re.sub(
+                                r'(<dimension\s+ref=")[^"]*(")',
+                                lambda m: m.group(1) + new_dim + m.group(2),
+                                orig_str)
+
+                        # Build merge cells XML (no namespace prefix — inherits from root default ns)
                         merge_refs = []
                         for merge in sheet.get('merges', []) or []:
                             try:
                                 merge_refs.append(_merge_ref_for_sheet(sheet, merge))
                             except Exception:
                                 continue
+
+                        # Remove existing mergeCells block
+                        orig_str = _re.sub(r'<mergeCells(?:\s[^>]*)?>.*?</mergeCells>', '', orig_str, flags=_re.DOTALL)
+                        orig_str = _re.sub(r'<mergeCells(?:\s[^>]*)?/>', '', orig_str)
+
                         if merge_refs:
-                            merge_cells = _ET.Element(f'{{{ns["a"]}}}mergeCells')
-                            merge_cells.set('count', str(len(merge_refs)))
-                            for ref in merge_refs:
-                                merge_el = _ET.SubElement(merge_cells, f'{{{ns["a"]}}}mergeCell')
-                                merge_el.set('ref', ref)
-                            insert_idx = list(root).index(sheet_data) + 1
-                            root.insert(insert_idx, merge_cells)
-                        data = _ET.tostring(root, encoding='utf-8', xml_declaration=True)
+                            mc_xml = f'<mergeCells count="{len(merge_refs)}">{"".join(f"<mergeCell ref=\"{ref}\"/>" for ref in merge_refs)}</mergeCells>'
+                            orig_str = _re.sub(r'(</sheetData>)', lambda m: m.group(1) + mc_xml, orig_str, count=1)
+
+                        data = orig_str.encode('utf-8')
             dst.writestr(name, data)
     return zout.getvalue()
 
