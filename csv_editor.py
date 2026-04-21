@@ -721,6 +721,9 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
         'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
     }
     main_ns_uri = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    # Register as default namespace so tostring() emits plain <sheetData> not <ns0:sheetData>
+    _ET.register_namespace('', main_ns_uri)
+    _ET.register_namespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
     by_name = {sh.get('name', ''): sh for sh in sheets}
     zin = io.BytesIO(raw_bytes)
     zout = io.BytesIO()
