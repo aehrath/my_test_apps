@@ -735,6 +735,10 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
         orig_ss_data = src.read('xl/sharedStrings.xml') if has_ss_file else None
         ss_list, shared_strings = _load_shared_strings_from_zip(src)  # both mutated in-place
         orig_ss_count = len(ss_list)
+        # Only use shared-string references if the file already has a sharedStrings.xml.
+        # Without one, writing t="s" cells would produce unresolvable references.
+        ss_ref = shared_strings if has_ss_file else None
+        ss_lst = ss_list       if has_ss_file else None
         sheet_paths = {}
         for sheet in wb.findall('a:sheets/a:sheet', ns):
             rid = sheet.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
@@ -790,7 +794,7 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
                                     continue
                                 cell_el = _ET.fromstring(_ET.tostring(old_cell)) if old_cell is not None else _ET.Element(f'{{{main_ns_uri}}}c')
                                 cell_el.set('r', ref)
-                                _set_xml_cell_value(cell_el, val, shared_strings=shared_strings, ss_list=ss_list)
+                                _set_xml_cell_value(cell_el, val, shared_strings=ss_ref, ss_list=ss_lst)
                                 row_el.append(cell_el)
                             new_sd.append(row_el)
 
@@ -1181,6 +1185,8 @@ class Handler(BaseHTTPRequestHandler):
                 raw = _write_xlsx_from_template(body, state.sheets,
                                                 cleared_bg=cleared_bg, cleared_text=cleared_text)
             except Exception as e:
+                import traceback as _tb
+                print(f'[build-xlsx-from-template] ERROR: {_tb.format_exc()}', flush=True)
                 self._json({'error': str(e)}); return
             self.send_response(200)
             self.send_header('Content-Type',
