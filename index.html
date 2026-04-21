@@ -801,7 +801,7 @@
   <span id="zoom-display" style="font-size:11px;color:#aac;min-width:44px;text-align:center">100%</span>
   <span id="bg-color-display" style="font-size:11px;color:#aac;min-width:132px;text-align:center">BG: None</span>
   <div class="sep"></div>
-  <input id="search-input" type="text" placeholder="🔍 Search…" oninput="applySearch(this.value)">
+  <input id="search-input" type="text" placeholder="🔍 Search…" oninput="debouncedApplySearch(this.value)">
   <button id="search-case-btn" class="search-toggle" onclick="toggleSearchCase()" title="Case sensitive on/off">Aa</button>
   <button id="search-word-btn" class="search-toggle" onclick="toggleSearchWholeWord()" title="Whole word on/off">W</button>
   <button onclick="clearSearch()">✕</button>
@@ -1023,6 +1023,9 @@ let searchTerm = '';
 let highlightCells = new Set(); // "r,c"
 let searchCaseSensitive = false;
 let searchWholeWord = false;
+let _searchDebounce = 0;
+let _searchRegex = null;
+let _searchTermLower = '';
 let _zoomPercent = 100;
 let _columnFilters = {};
 let _headerFilterState = null;
@@ -1394,6 +1397,7 @@ function refreshVisibleFormulaDisplays() {
     if (inp === document.activeElement) return;
     const r = +inp.dataset.r;
     const c = +inp.dataset.c;
+    if (!isFormulaValue(getRawCellValue(r, c))) return;
     inp.value = displayCellText(r, c);
   });
 }
@@ -2695,8 +2699,11 @@ function selectCell(r, c, e) {
 }
 
 function updateSelectionUI() {
-  document.querySelectorAll('#table-body tr').forEach(tr =>
-    tr.classList.toggle('selected-row', selectedRows.has(+(tr.dataset.rowIndex || -1))));
+  const tbody = document.getElementById('table-body');
+  for (let i = 0; i < tbody.rows.length; i++) {
+    const tr = tbody.rows[i];
+    tr.classList.toggle('selected-row', selectedRows.has(+(tr.dataset.rowIndex || -1)));
+  }
   document.querySelectorAll('[data-col-start]').forEach(el => {
     const start = +(el.dataset.colStart || 0);
     const span = +(el.dataset.colSpan || 1);
@@ -2707,34 +2714,35 @@ function updateSelectionUI() {
     const rowSpan = +(td.dataset.rowSpan || 1);
     const colStart = +(td.dataset.colStart || 0);
     const colSpan = +(td.dataset.colSpan || 1);
-    const selectedRowIndexes = [];
-    const selectedColIndexes = [];
 
-    for (let r = rowStart; r < rowStart + rowSpan; r++) {
-      if (selectedRows.has(r)) selectedRowIndexes.push(r);
+    let rowSelected, colSelected;
+    if (rowSpan === 1) {
+      rowSelected = selectedRows.has(rowStart);
+    } else {
+      rowSelected = false;
+      for (let r = rowStart; r < rowStart + rowSpan; r++) {
+        if (selectedRows.has(r)) { rowSelected = true; break; }
+      }
     }
-    for (let c = colStart; c < colStart + colSpan; c++) {
-      if (selectedCols.has(c)) selectedColIndexes.push(c);
+    if (colSpan === 1) {
+      colSelected = selectedCols.has(colStart);
+    } else {
+      colSelected = false;
+      for (let c = colStart; c < colStart + colSpan; c++) {
+        if (selectedCols.has(c)) { colSelected = true; break; }
+      }
     }
 
-    const isSelected = selectedRowIndexes.length > 0 && selectedColIndexes.length > 0;
+    const isSelected = rowSelected && colSelected;
     td.classList.toggle('selected-cell', isSelected);
-
-    let top = false;
-    let bottom = false;
-    let left = false;
-    let right = false;
     if (isSelected) {
-      top = selectedColIndexes.some(c => !selectedRows.has(rowStart - 1) || !selectedCols.has(c));
-      bottom = selectedColIndexes.some(c => !selectedRows.has(rowStart + rowSpan) || !selectedCols.has(c));
-      left = selectedRowIndexes.some(r => !selectedRows.has(r) || !selectedCols.has(colStart - 1));
-      right = selectedRowIndexes.some(r => !selectedRows.has(r) || !selectedCols.has(colStart + colSpan));
+      td.classList.toggle('selection-top',    !selectedRows.has(rowStart - 1));
+      td.classList.toggle('selection-bottom', !selectedRows.has(rowStart + rowSpan));
+      td.classList.toggle('selection-left',   !selectedCols.has(colStart - 1));
+      td.classList.toggle('selection-right',  !selectedCols.has(colStart + colSpan));
+    } else {
+      td.classList.remove('selection-top', 'selection-bottom', 'selection-left', 'selection-right');
     }
-
-    td.classList.toggle('selection-top', top);
-    td.classList.toggle('selection-bottom', bottom);
-    td.classList.toggle('selection-left', left);
-    td.classList.toggle('selection-right', right);
   });
   const activeInput = document.querySelector(`input[data-r="${_activeCell.r}"][data-c="${_activeCell.c}"]`);
   document.querySelector('.active-cell')?.classList.remove('active-cell');
@@ -3499,15 +3507,27 @@ function searchMatches(value, term) {
   const hay = String(value || '');
   if (!term) return false;
   if (searchWholeWord) {
-    const flags = searchCaseSensitive ? '' : 'i';
-    return new RegExp(`\\b${escapeRegex(term)}\\b`, flags).test(hay);
+    return _searchRegex.test(hay);
   }
   if (searchCaseSensitive) return hay.includes(term);
-  return hay.toLowerCase().includes(term.toLowerCase());
+  return hay.toLowerCase().includes(_searchTermLower);
+}
+
+let _debouncedApplySearchTerm = '';
+function debouncedApplySearch(term) {
+  _debouncedApplySearchTerm = term;
+  clearTimeout(_searchDebounce);
+  _searchDebounce = setTimeout(() => applySearch(_debouncedApplySearchTerm), 120);
 }
 
 function applySearch(term) {
   searchTerm = term;
+  _searchRegex = null;
+  _searchTermLower = term ? term.toLowerCase() : '';
+  if (term && searchWholeWord) {
+    const flags = searchCaseSensitive ? '' : 'i';
+    _searchRegex = new RegExp(`\\b${escapeRegex(term)}\\b`, flags);
+  }
   highlightCells.clear();
   if (searchTerm) {
     S.rows.forEach((row, r) => {
