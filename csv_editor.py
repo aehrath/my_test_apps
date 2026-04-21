@@ -604,6 +604,20 @@ def _load_shared_strings_from_zip(src_zip):
         return {}
 
 
+def _build_shared_strings_xml(ss_by_text):
+    entries = sorted(ss_by_text.items(), key=lambda x: x[1])
+    n = len(entries)
+    parts = [f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+             f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+             f'count="{n}" uniqueCount="{n}">']
+    for text, _ in entries:
+        escaped = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+        sp = ' xml:space="preserve"' if (text.startswith(' ') or text.endswith(' ') or '\n' in text) else ''
+        parts.append(f'<si><t{sp}>{escaped}</t></si>')
+    parts.append('</sst>')
+    return ''.join(parts).encode('utf-8')
+
+
 def _set_xml_cell_value(cell_el, value, shared_strings=None):
     original_t = cell_el.attrib.get('t')
     original_formula = next((child for child in list(cell_el) if child.tag.endswith('f')), None)
@@ -653,12 +667,12 @@ def _set_xml_cell_value(cell_el, value, shared_strings=None):
         return
     str_val = '' if value is None else str(value)
     if shared_strings is not None:
-        idx = shared_strings.get(str_val)
-        if idx is not None:
-            cell_el.set('t', 's')
-            v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
-            v.text = str(idx)
-            return
+        if str_val not in shared_strings:
+            shared_strings[str_val] = len(shared_strings)
+        cell_el.set('t', 's')
+        v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
+        v.text = str(shared_strings[str_val])
+        return
     cell_el.set('t', 'inlineStr')
     is_el = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'is')
     t_el = _ET.SubElement(is_el, cell_el.tag[:-1] + 't')
@@ -703,7 +717,8 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
         wb = _ET.fromstring(src.read('xl/workbook.xml'))
         wb_rels = _ET.fromstring(src.read('xl/_rels/workbook.xml.rels'))
         rel_targets = {rel.attrib['Id']: rel.attrib['Target'] for rel in wb_rels.findall('{*}Relationship')}
-        shared_strings = _load_shared_strings_from_zip(src)
+        shared_strings = _load_shared_strings_from_zip(src)  # mutable dict updated in-place
+        has_ss_file = 'xl/sharedStrings.xml' in src.namelist()
         sheet_paths = {}
         for sheet in wb.findall('a:sheets/a:sheet', ns):
             rid = sheet.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
@@ -712,6 +727,8 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
                 sheet_paths[sheet.attrib.get('name', '')] = _ppath.normpath('xl/' + target)
 
         for name in src.namelist():
+            if name == 'xl/sharedStrings.xml':
+                continue  # written after all sheets are processed
             data = src.read(name)
             if name == 'xl/styles.xml' and (_cleared_bg_hex or _cleared_txt_hex):
                 data = _apply_clear_colors_to_styles_xml(data, _cleared_bg_hex, _cleared_txt_hex)
@@ -800,6 +817,8 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
 
                         data = orig_str.encode('utf-8')
             dst.writestr(name, data)
+        if has_ss_file or shared_strings:
+            dst.writestr('xl/sharedStrings.xml', _build_shared_strings_xml(shared_strings))
     return zout.getvalue()
 
 
