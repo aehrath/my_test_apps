@@ -589,36 +589,44 @@ def _ordered_sheet_rows(sheet):
 
 
 def _load_shared_strings_from_zip(src_zip):
+    """Returns (ss_list, ss_dict) preserving all original entries including duplicates."""
     if 'xl/sharedStrings.xml' not in src_zip.namelist():
-        return {}
+        return [], {}
     try:
         root = _ET.fromstring(src_zip.read('xl/sharedStrings.xml'))
         ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
-        result = {}
-        for i, si in enumerate(root.findall(f'{{{ns}}}si')):
+        ss_list = []
+        ss_dict = {}
+        for si in root.findall(f'{{{ns}}}si'):
             text = ''.join(t.text or '' for t in si.iter(f'{{{ns}}}t'))
-            if text not in result:
-                result[text] = i
-        return result
+            ss_list.append(text)
+            if text not in ss_dict:
+                ss_dict[text] = len(ss_list) - 1
+        return ss_list, ss_dict
     except Exception:
-        return {}
+        return [], {}
 
 
-def _build_shared_strings_xml(ss_by_text):
-    entries = sorted(ss_by_text.items(), key=lambda x: x[1])
-    n = len(entries)
-    parts = [f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-             f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
-             f'count="{n}" uniqueCount="{n}">']
-    for text, _ in entries:
-        escaped = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-        sp = ' xml:space="preserve"' if (text.startswith(' ') or text.endswith(' ') or '\n' in text) else ''
-        parts.append(f'<si><t{sp}>{escaped}</t></si>')
-    parts.append('</sst>')
-    return ''.join(parts).encode('utf-8')
+def _append_new_strings_to_ss_xml(orig_data, new_texts):
+    """Append new <si> entries to existing sharedStrings.xml bytes."""
+    import re as _re
+    try:
+        s = orig_data.decode('utf-8')
+        parts = []
+        for text in new_texts:
+            escaped = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            sp = ' xml:space="preserve"' if (text.startswith(' ') or text.endswith(' ') or '\n' in text) else ''
+            parts.append(f'<si><t{sp}>{escaped}</t></si>')
+        n = len(new_texts)
+        s = s.replace('</sst>', ''.join(parts) + '</sst>')
+        s = _re.sub(r'\bcount="(\d+)"',       lambda m: f'count="{int(m.group(1)) + n}"',       s)
+        s = _re.sub(r'\buniqueCount="(\d+)"', lambda m: f'uniqueCount="{int(m.group(1)) + n}"', s)
+        return s.encode('utf-8')
+    except Exception:
+        return orig_data
 
 
-def _set_xml_cell_value(cell_el, value, shared_strings=None):
+def _set_xml_cell_value(cell_el, value, shared_strings=None, ss_list=None):
     original_t = cell_el.attrib.get('t')
     original_formula = next((child for child in list(cell_el) if child.tag.endswith('f')), None)
     original_formula_attrs = dict(original_formula.attrib) if original_formula is not None else None
@@ -668,7 +676,10 @@ def _set_xml_cell_value(cell_el, value, shared_strings=None):
     str_val = '' if value is None else str(value)
     if shared_strings is not None:
         if str_val not in shared_strings:
-            shared_strings[str_val] = len(shared_strings)
+            idx = len(ss_list) if ss_list is not None else len(shared_strings)
+            shared_strings[str_val] = idx
+            if ss_list is not None:
+                ss_list.append(str_val)
         cell_el.set('t', 's')
         v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
         v.text = str(shared_strings[str_val])
@@ -717,8 +728,10 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
         wb = _ET.fromstring(src.read('xl/workbook.xml'))
         wb_rels = _ET.fromstring(src.read('xl/_rels/workbook.xml.rels'))
         rel_targets = {rel.attrib['Id']: rel.attrib['Target'] for rel in wb_rels.findall('{*}Relationship')}
-        shared_strings = _load_shared_strings_from_zip(src)  # mutable dict updated in-place
         has_ss_file = 'xl/sharedStrings.xml' in src.namelist()
+        orig_ss_data = src.read('xl/sharedStrings.xml') if has_ss_file else None
+        ss_list, shared_strings = _load_shared_strings_from_zip(src)  # both mutated in-place
+        orig_ss_count = len(ss_list)
         sheet_paths = {}
         for sheet in wb.findall('a:sheets/a:sheet', ns):
             rid = sheet.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
@@ -774,7 +787,7 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
                                     continue
                                 cell_el = _ET.fromstring(_ET.tostring(old_cell)) if old_cell is not None else _ET.Element(f'{{{main_ns_uri}}}c')
                                 cell_el.set('r', ref)
-                                _set_xml_cell_value(cell_el, val, shared_strings=shared_strings)
+                                _set_xml_cell_value(cell_el, val, shared_strings=shared_strings, ss_list=ss_list)
                                 row_el.append(cell_el)
                             new_sd.append(row_el)
 
@@ -817,8 +830,10 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
 
                         data = orig_str.encode('utf-8')
             dst.writestr(name, data)
-        if has_ss_file or shared_strings:
-            dst.writestr('xl/sharedStrings.xml', _build_shared_strings_xml(shared_strings))
+        if orig_ss_data is not None:
+            new_texts = ss_list[orig_ss_count:]
+            updated = _append_new_strings_to_ss_xml(orig_ss_data, new_texts) if new_texts else orig_ss_data
+            dst.writestr('xl/sharedStrings.xml', updated)
     return zout.getvalue()
 
 
