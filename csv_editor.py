@@ -1172,14 +1172,24 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             cleared_bg   = [c for c in qs.get('cleared_bg',    [''])[0].split(',') if c.strip()]
             cleared_text = [c for c in qs.get('cleared_color', [''])[0].split(',') if c.strip()]
-            print(f'[build-xlsx-from-template v7] body={len(body)}B cleared_bg={cleared_bg}', flush=True)
+            print(f'[build-xlsx-from-template v8] body={len(body)}B cleared_bg={cleared_bg}', flush=True)
             try:
                 raw = _write_xlsx_from_template(body, state.sheets,
                                                 cleared_bg=cleared_bg, cleared_text=cleared_text)
-                print(f'[build-xlsx-from-template v7] OK output={len(raw)}B', flush=True)
+                print(f'[build-xlsx-from-template v8] OK output={len(raw)}B', flush=True)
+                import tempfile as _tf, os as _os
+                _dbg = _os.path.join(_tf.gettempdir(), 'last_save_debug.xlsx')
+                with open(_dbg, 'wb') as _f: _f.write(raw)
+                print(f'[build-xlsx-from-template v8] debug copy → {_dbg}', flush=True)
+                import zipfile as _zf
+                with _zf.ZipFile(io.BytesIO(raw)) as _z:
+                    for _n in _z.namelist():
+                        if 'worksheets' in _n and _n.endswith('.xml'):
+                            _xml = _z.read(_n).decode('utf-8', errors='replace')
+                            print(f'[build-xlsx-from-template v8] {_n} first 1200: {_xml[:1200]}', flush=True)
             except Exception as e:
                 import traceback as _tb
-                print(f'[build-xlsx-from-template v7] ERROR:\n{_tb.format_exc()}', flush=True)
+                print(f'[build-xlsx-from-template v8] ERROR:\n{_tb.format_exc()}', flush=True)
                 self._json({'error': str(e)}); return
             self.send_response(200)
             self.send_header('Content-Type',
