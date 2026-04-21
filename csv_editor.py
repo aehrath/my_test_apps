@@ -675,15 +675,12 @@ def _set_xml_cell_value(cell_el, value, shared_strings=None, ss_list=None):
         return
     str_val = '' if value is None else str(value)
     if shared_strings is not None:
-        if str_val not in shared_strings:
-            idx = len(ss_list) if ss_list is not None else len(shared_strings)
-            shared_strings[str_val] = idx
-            if ss_list is not None:
-                ss_list.append(str_val)
-        cell_el.set('t', 's')
-        v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
-        v.text = str(shared_strings[str_val])
-        return
+        idx = shared_strings.get(str_val)
+        if idx is not None:
+            cell_el.set('t', 's')
+            v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
+            v.text = str(idx)
+            return
     cell_el.set('t', 'inlineStr')
     is_el = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'is')
     t_el = _ET.SubElement(is_el, cell_el.tag[:-1] + 't')
@@ -732,13 +729,9 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
         wb_rels = _ET.fromstring(src.read('xl/_rels/workbook.xml.rels'))
         rel_targets = {rel.attrib['Id']: rel.attrib['Target'] for rel in wb_rels.findall('{*}Relationship')}
         has_ss_file = 'xl/sharedStrings.xml' in src.namelist()
-        orig_ss_data = src.read('xl/sharedStrings.xml') if has_ss_file else None
-        ss_list, shared_strings = _load_shared_strings_from_zip(src)  # both mutated in-place
-        orig_ss_count = len(ss_list)
-        # Only use shared-string references if the file already has a sharedStrings.xml.
-        # Without one, writing t="s" cells would produce unresolvable references.
+        _ss_list, shared_strings = _load_shared_strings_from_zip(src)
+        # Only use t="s" references when the original file has a sharedStrings table.
         ss_ref = shared_strings if has_ss_file else None
-        ss_lst = ss_list       if has_ss_file else None
         sheet_paths = {}
         for sheet in wb.findall('a:sheets/a:sheet', ns):
             rid = sheet.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
@@ -747,8 +740,6 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
                 sheet_paths[sheet.attrib.get('name', '')] = _ppath.normpath('xl/' + target)
 
         for name in src.namelist():
-            if name == 'xl/sharedStrings.xml':
-                continue  # written after all sheets are processed
             data = src.read(name)
             if name == 'xl/styles.xml' and (_cleared_bg_hex or _cleared_txt_hex):
                 data = _apply_clear_colors_to_styles_xml(data, _cleared_bg_hex, _cleared_txt_hex)
@@ -794,7 +785,7 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
                                     continue
                                 cell_el = _ET.fromstring(_ET.tostring(old_cell)) if old_cell is not None else _ET.Element(f'{{{main_ns_uri}}}c')
                                 cell_el.set('r', ref)
-                                _set_xml_cell_value(cell_el, val, shared_strings=ss_ref, ss_list=ss_lst)
+                                _set_xml_cell_value(cell_el, val, shared_strings=ss_ref)
                                 row_el.append(cell_el)
                             new_sd.append(row_el)
 
@@ -837,10 +828,6 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
 
                         data = orig_str.encode('utf-8')
             dst.writestr(name, data)
-        if orig_ss_data is not None:
-            new_texts = ss_list[orig_ss_count:]
-            updated = _append_new_strings_to_ss_xml(orig_ss_data, new_texts) if new_texts else orig_ss_data
-            dst.writestr('xl/sharedStrings.xml', updated)
     return zout.getvalue()
 
 
@@ -1181,12 +1168,14 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             cleared_bg   = [c for c in qs.get('cleared_bg',    [''])[0].split(',') if c.strip()]
             cleared_text = [c for c in qs.get('cleared_color', [''])[0].split(',') if c.strip()]
+            print(f'[build-xlsx-from-template v7] body={len(body)}B cleared_bg={cleared_bg}', flush=True)
             try:
                 raw = _write_xlsx_from_template(body, state.sheets,
                                                 cleared_bg=cleared_bg, cleared_text=cleared_text)
+                print(f'[build-xlsx-from-template v7] OK output={len(raw)}B', flush=True)
             except Exception as e:
                 import traceback as _tb
-                print(f'[build-xlsx-from-template] ERROR: {_tb.format_exc()}', flush=True)
+                print(f'[build-xlsx-from-template v7] ERROR:\n{_tb.format_exc()}', flush=True)
                 self._json({'error': str(e)}); return
             self.send_response(200)
             self.send_header('Content-Type',
