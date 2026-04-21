@@ -739,8 +739,23 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
             if target:
                 sheet_paths[sheet.attrib.get('name', '')] = _ppath.normpath('xl/' + target)
 
+        # Build set of calcChain relationship IDs to skip (stale calc chain causes Excel rejection)
+        _calcchain_targets = set()
+        for rel in wb_rels.findall('{*}Relationship'):
+            rtype = rel.attrib.get('Type', '')
+            if rtype.endswith('/calcChain'):
+                _calcchain_targets.add(_ppath.normpath('xl/' + rel.attrib.get('Target', '')))
+
         for name in src.namelist():
+            # Drop calcChain — Excel rebuilds it; stale entries referencing removed formulas
+            # can cause hard "couldn't open" rejection in some Excel versions.
+            if _ppath.normpath(name) in _calcchain_targets:
+                continue
             data = src.read(name)
+            if name == '[Content_Types].xml':
+                data = _re.sub(rb'<Override[^>]+calcChain[^>]*/>', b'', data)
+            if name == 'xl/_rels/workbook.xml.rels':
+                data = _re.sub(rb'<Relationship[^>]+calcChain[^>]*/>', b'', data)
             if name == 'xl/styles.xml' and (_cleared_bg_hex or _cleared_txt_hex):
                 data = _apply_clear_colors_to_styles_xml(data, _cleared_bg_hex, _cleared_txt_hex)
             if name in sheet_paths.values():
@@ -1039,6 +1054,21 @@ def _load_html():
 class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
+        if self.path.startswith('/api/debug-file'):
+            import tempfile as _tf, os as _os
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            fname = qs.get('name', ['last_save_debug.xlsx'])[0]
+            fpath = _os.path.join(_tf.gettempdir(), _os.path.basename(fname))
+            if _os.path.exists(fpath):
+                with open(fpath, 'rb') as _f: data = _f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                self.send_header('Content-Disposition', f'attachment; filename="{fname}"')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers(); self.wfile.write(data)
+            else:
+                self.send_response(404); self.end_headers()
+            return
         if self.path == '/':
             self._serve_html()
         elif self.path == '/api/data':
@@ -1173,11 +1203,14 @@ class Handler(BaseHTTPRequestHandler):
             cleared_bg   = [c for c in qs.get('cleared_bg',    [''])[0].split(',') if c.strip()]
             cleared_text = [c for c in qs.get('cleared_color', [''])[0].split(',') if c.strip()]
             print(f'[build-xlsx-from-template v8] body={len(body)}B cleared_bg={cleared_bg}', flush=True)
+            import tempfile as _tf, os as _os
+            _tmpl = _os.path.join(_tf.gettempdir(), 'last_save_template.xlsx')
+            with open(_tmpl, 'wb') as _f: _f.write(body)
+            print(f'[build-xlsx-from-template v8] template saved → {_tmpl}', flush=True)
             try:
                 raw = _write_xlsx_from_template(body, state.sheets,
                                                 cleared_bg=cleared_bg, cleared_text=cleared_text)
                 print(f'[build-xlsx-from-template v8] OK output={len(raw)}B', flush=True)
-                import tempfile as _tf, os as _os
                 _dbg = _os.path.join(_tf.gettempdir(), 'last_save_debug.xlsx')
                 with open(_dbg, 'wb') as _f: _f.write(raw)
                 print(f'[build-xlsx-from-template v8] debug copy → {_dbg}', flush=True)
