@@ -789,9 +789,13 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
                                 row_el.append(cell_el)
                             new_sd.append(row_el)
 
-                        # Serialize sheetData only; strip namespace declarations since root already has them
+                        # Serialize sheetData; strip ET-added xmlns declarations then re-add just the main
+                        # namespace as an explicit default on <sheetData> so its subtree is always in the
+                        # correct namespace regardless of whether the parent uses a prefixed ns (ns0:) or
+                        # a default ns — Excel enforces namespace correctness, XLSX.js does not.
                         new_sd_str = _ET.tostring(new_sd, encoding='unicode')
-                        new_sd_str = _re.sub(r' xmlns(?::\w+)?="[^"]*"', '', new_sd_str)
+                        new_sd_str = _re.sub(r'\s*xmlns(?::\w+)?="[^"]*"', '', new_sd_str)
+                        new_sd_str = new_sd_str.replace('<sheetData', f'<sheetData xmlns="{main_ns_uri}"', 1)
 
                         # Operate on original XML bytes to preserve root element, namespaces, and attributes exactly
                         orig_str = data.decode('utf-8')
