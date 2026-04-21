@@ -588,7 +588,23 @@ def _ordered_sheet_rows(sheet):
     return leading + [header] + trailing
 
 
-def _set_xml_cell_value(cell_el, value):
+def _load_shared_strings_from_zip(src_zip):
+    if 'xl/sharedStrings.xml' not in src_zip.namelist():
+        return {}
+    try:
+        root = _ET.fromstring(src_zip.read('xl/sharedStrings.xml'))
+        ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+        result = {}
+        for i, si in enumerate(root.findall(f'{{{ns}}}si')):
+            text = ''.join(t.text or '' for t in si.iter(f'{{{ns}}}t'))
+            if text not in result:
+                result[text] = i
+        return result
+    except Exception:
+        return {}
+
+
+def _set_xml_cell_value(cell_el, value, shared_strings=None):
     original_t = cell_el.attrib.get('t')
     original_formula = next((child for child in list(cell_el) if child.tag.endswith('f')), None)
     original_formula_attrs = dict(original_formula.attrib) if original_formula is not None else None
@@ -602,7 +618,12 @@ def _set_xml_cell_value(cell_el, value):
         cell_el.attrib.pop('t', None)
         f = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'f')
         if original_formula_attrs:
-            f.attrib.update(original_formula_attrs)
+            # Strip shared/array formula metadata — having explicit formula text
+            # alongside t="shared"/si is invalid OOXML and triggers repair warnings
+            safe = {k: v for k, v in original_formula_attrs.items()
+                    if k not in ('si',) and not (k == 't' and v in ('shared',))}
+            if safe:
+                f.attrib.update(safe)
         f.text = value[1:]
         return
     py_val = _str_to_cell(value) if isinstance(value, str) else value
@@ -630,12 +651,20 @@ def _set_xml_cell_value(cell_el, value):
         v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
         v.text = str(py_val)
         return
+    str_val = '' if value is None else str(value)
+    if shared_strings is not None:
+        idx = shared_strings.get(str_val)
+        if idx is not None:
+            cell_el.set('t', 's')
+            v = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'v')
+            v.text = str(idx)
+            return
     cell_el.set('t', 'inlineStr')
     is_el = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'is')
     t_el = _ET.SubElement(is_el, cell_el.tag[:-1] + 't')
     if isinstance(value, str) and (value.startswith(' ') or value.endswith(' ') or '\n' in value):
         t_el.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-    t_el.text = '' if value is None else str(value)
+    t_el.text = str_val
 
 
 def _apply_clear_colors_to_styles_xml(data, cleared_bg_hex, cleared_text_hex):
@@ -674,6 +703,7 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
         wb = _ET.fromstring(src.read('xl/workbook.xml'))
         wb_rels = _ET.fromstring(src.read('xl/_rels/workbook.xml.rels'))
         rel_targets = {rel.attrib['Id']: rel.attrib['Target'] for rel in wb_rels.findall('{*}Relationship')}
+        shared_strings = _load_shared_strings_from_zip(src)
         sheet_paths = {}
         for sheet in wb.findall('a:sheets/a:sheet', ns):
             rid = sheet.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
@@ -727,7 +757,7 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
                                     continue
                                 cell_el = _ET.fromstring(_ET.tostring(old_cell)) if old_cell is not None else _ET.Element(f'{{{main_ns_uri}}}c')
                                 cell_el.set('r', ref)
-                                _set_xml_cell_value(cell_el, val)
+                                _set_xml_cell_value(cell_el, val, shared_strings=shared_strings)
                                 row_el.append(cell_el)
                             new_sd.append(row_el)
 
