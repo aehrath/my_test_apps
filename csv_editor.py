@@ -799,7 +799,7 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
                         # Replace sheetData (handles both empty <sheetData/> and <sheetData>...</sheetData>)
                         _new_sd = new_sd_str  # closure for lambda
                         orig_str = _re.sub(
-                            r'<sheetData(?:\s[^>]*)?>.*?</sheetData>|<sheetData(?:\s[^>]*)?/>',
+                            r'<(?:\w+:)?sheetData(?:\s[^>]*)?>.*?</(?:\w+:)?sheetData>|<(?:\w+:)?sheetData(?:\s[^>]*)?/>',
                             lambda m: _new_sd, orig_str, flags=_re.DOTALL)
 
                         # Update dimension ref
@@ -824,7 +824,7 @@ def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=N
 
                         if merge_refs:
                             mc_xml = f'<mergeCells count="{len(merge_refs)}">{"".join(f"<mergeCell ref=\"{ref}\"/>" for ref in merge_refs)}</mergeCells>'
-                            orig_str = _re.sub(r'(</sheetData>)', lambda m: m.group(1) + mc_xml, orig_str, count=1)
+                            orig_str = _re.sub(r'(</(?:\w+:)?sheetData>)', lambda m: m.group(1) + mc_xml, orig_str, count=1)
 
                         data = orig_str.encode('utf-8')
             dst.writestr(name, data)
