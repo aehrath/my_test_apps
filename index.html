@@ -1026,6 +1026,7 @@ let searchWholeWord = false;
 let _searchDebounce = 0;
 let _searchRegex = null;
 let _searchTermLower = '';
+let _pendingClearColors = { bg: new Set(), color: new Set() };
 let _zoomPercent = 100;
 let _columnFilters = {};
 let _headerFilterState = null;
@@ -3298,6 +3299,8 @@ function clearSheetColors() {
     if (!selected.bg.size && !selected.color.size) return;
     if (_cellStyles.headerStyles) _cellStyles.headerStyles = _cellStyles.headerStyles.map(st => stripSelectedColors(st, selected));
     if (_cellStyles.rowStyles) _cellStyles.rowStyles = _cellStyles.rowStyles.map(row => (row || []).map(st => stripSelectedColors(st, selected)));
+    selected.bg.forEach(c => _pendingClearColors.bg.add(c));
+    selected.color.forEach(c => _pendingClearColors.color.add(c));
     markModified();
     render();
   });
@@ -3669,6 +3672,7 @@ function openFile() {
         _conditionalFormats = [];
         S.columnWidths = [];
       }
+      _pendingClearColors = { bg: new Set(), color: new Set() };
       setBaseline(S.headers, S.rows);
       sortCol = -1; sortAsc = true;
       resetColumnFilters();
@@ -3684,7 +3688,8 @@ function openFile() {
 }
 
 async function _buildXlsxBytes() {
-  if (_xlsxOrigBuf && !S.modified) {
+  const hasPendingClears = _pendingClearColors.bg.size || _pendingClearColors.color.size;
+  if (_xlsxOrigBuf && !S.modified && !hasPendingClears) {
     return _xlsxOrigBuf.slice(0);
   }
   // Flush active sheet edits to server first
@@ -3692,7 +3697,10 @@ async function _buildXlsxBytes() {
   const all = await fetch('/api/all-sheets').then(r => r.json());
 
   if (_xlsxOrigBuf) {
-    const res = await fetch('/api/build-xlsx-from-template', {
+    const clearedBg    = [..._pendingClearColors.bg].join(',');
+    const clearedColor = [..._pendingClearColors.color].join(',');
+    const templateUrl  = `/api/build-xlsx-from-template?cleared_bg=${encodeURIComponent(clearedBg)}&cleared_color=${encodeURIComponent(clearedColor)}`;
+    const res = await fetch(templateUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: new Uint8Array(_xlsxOrigBuf)
@@ -3727,7 +3735,10 @@ async function _saveXlsx(filepath) {
   });
   const data = await res.json();
   if (data.ok) {
-    S.filepath = data.filepath; S.filetype = 'xlsx'; S.modified = false; updateStatus();
+    S.filepath = data.filepath; S.filetype = 'xlsx'; S.modified = false;
+    _xlsxOrigBuf = u8 instanceof ArrayBuffer ? u8 : u8.buffer ?? u8;
+    _pendingClearColors = { bg: new Set(), color: new Set() };
+    updateStatus();
     return true;
   }
   alert('Save failed: ' + data.error);

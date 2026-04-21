@@ -638,8 +638,30 @@ def _set_xml_cell_value(cell_el, value):
     t_el.text = '' if value is None else str(value)
 
 
-def _write_xlsx_from_template(raw_bytes, sheets):
+def _apply_clear_colors_to_styles_xml(data, cleared_bg_hex, cleared_text_hex):
     import re as _re
+    if not cleared_bg_hex and not cleared_text_hex:
+        return data
+    try:
+        s = data.decode('utf-8')
+        if cleared_bg_hex:
+            def _clear_fill(m):
+                rgb_m = _re.search(r'rgb="[A-Fa-f0-9]{0,2}([A-Fa-f0-9]{6})"', m.group(0))
+                if rgb_m and rgb_m.group(1).lower() in cleared_bg_hex:
+                    return '<fill><patternFill patternType="none"/></fill>'
+                return m.group(0)
+            s = _re.sub(
+                r'<fill>\s*<patternFill\s+patternType="solid">.*?</patternFill>\s*</fill>',
+                _clear_fill, s, flags=_re.DOTALL)
+        return s.encode('utf-8')
+    except Exception:
+        return data
+
+
+def _write_xlsx_from_template(raw_bytes, sheets, cleared_bg=None, cleared_text=None):
+    import re as _re
+    _cleared_bg_hex  = {c.lstrip('#').lower()[-6:] for c in (cleared_bg  or []) if c}
+    _cleared_txt_hex = {c.lstrip('#').lower()[-6:] for c in (cleared_text or []) if c}
     ns = {
         'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
         'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
@@ -661,6 +683,8 @@ def _write_xlsx_from_template(raw_bytes, sheets):
 
         for name in src.namelist():
             data = src.read(name)
+            if name == 'xl/styles.xml' and (_cleared_bg_hex or _cleared_txt_hex):
+                data = _apply_clear_colors_to_styles_xml(data, _cleared_bg_hex, _cleared_txt_hex)
             if name in sheet_paths.values():
                 sheet_name = next((k for k, v in sheet_paths.items() if v == name), None)
                 sheet = by_name.get(sheet_name or '')
@@ -1082,9 +1106,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({'error': str(e)}); return
             self._json({'ok': True, 'sheets': sheets})
             return
-        if self.path == '/api/build-xlsx-from-template':
+        if self.path.startswith('/api/build-xlsx-from-template'):
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            cleared_bg   = [c for c in qs.get('cleared_bg',    [''])[0].split(',') if c.strip()]
+            cleared_text = [c for c in qs.get('cleared_color', [''])[0].split(',') if c.strip()]
             try:
-                raw = _write_xlsx_from_template(body, state.sheets)
+                raw = _write_xlsx_from_template(body, state.sheets,
+                                                cleared_bg=cleared_bg, cleared_text=cleared_text)
             except Exception as e:
                 self._json({'error': str(e)}); return
             self.send_response(200)
