@@ -486,7 +486,7 @@ def _parse_xlsx_sheets_with_styles(raw_bytes):
                 if cell.data_type == 'f':
                     v = cell.value
                     f = v.text if hasattr(v, 'text') else (v or '')
-                    row_vals.append(_re.sub(r'_xlfn\.', '', f))
+                    row_vals.append(f if f.startswith('=') else ('=' + f if f else f))
                 else:
                     row_vals.append(_cell_to_str_formatted(cell.value, cell.number_format))
                 st = {}
@@ -640,15 +640,32 @@ def _set_xml_cell_value(cell_el, value, shared_strings=None, ss_list=None):
         cell_el.attrib.pop('t', None)
         f = _ET.SubElement(cell_el, cell_el.tag[:-1] + 'f')
         if original_formula_attrs:
-            # Strip shared/array formula metadata — having explicit formula text
-            # alongside t="shared"/si is invalid OOXML and triggers repair warnings
+            # Strip shared formula attributes. Keep ref only for array formulas
+            # (t="array"); for shared formulas the ref is only meaningful alongside
+            # t="shared", and leaving it without t="shared" causes Excel to reject.
+            _was_shared = original_formula_attrs.get('t') == 'shared'
             safe = {k: v for k, v in original_formula_attrs.items()
-                    if k not in ('si',) and not (k == 't' and v in ('shared',))}
+                    if k not in ('si',)
+                    and not (k == 't' and v == 'shared')
+                    and not (k == 'ref' and _was_shared)}
             if safe:
                 f.attrib.update(safe)
         f.text = value[1:]
         return
     py_val = _str_to_cell(value) if isinstance(value, str) else value
+    # If the original cell was numeric (no t attr) and the value is a date string,
+    # convert it back to an Excel serial so date formats and lookups are preserved.
+    if isinstance(py_val, str) and original_t is None:
+        _dm = _re.match(r'^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}):(\d{2}))?$', py_val)
+        if _dm:
+            try:
+                _d = _dt.date(int(_dm.group(1)), int(_dm.group(2)), int(_dm.group(3)))
+                _serial = (_d - _dt.date(1899, 12, 30)).days
+                if _dm.group(4):
+                    _serial += (int(_dm.group(4)) * 3600 + int(_dm.group(5)) * 60 + int(_dm.group(6))) / 86400
+                py_val = int(_serial) if _serial == int(_serial) else _serial
+            except (ValueError, OverflowError):
+                pass
     force_string = original_t in ('s', 'str', 'inlineStr')
     if isinstance(value, str):
         stripped = value.strip()
@@ -948,7 +965,7 @@ def _parse_xlsx(raw_bytes):
         ws = wb[wb.sheetnames[0]]
     all_rows = []
     for row in ws.iter_rows(values_only=False):
-        cells = [_re.sub(r'_xlfn\.', '', v.text if hasattr(v := cell.value, 'text') else (v or '')) if cell.data_type == 'f' else _cell_to_str(cell.value) for cell in row]
+        cells = [(lambda f: f if f.startswith('=') else ('=' + f if f else f))(v.text if hasattr(v := cell.value, 'text') else (v or '')) if cell.data_type == 'f' else _cell_to_str(cell.value) for cell in row]
         # Skip rows that are entirely blank
         if any(v != '' for v in cells):
             all_rows.append(cells)
@@ -1113,7 +1130,7 @@ class Handler(BaseHTTPRequestHandler):
             path = qs.get('path', [gh.path])[0]
             if not sha or not gh.token or not gh.repo:
                 self._json({'error': 'Missing params'}); return
-            result, err = _gh_api('GET', f'/repos/{gh.repo}/contents/{path.lstrip("/")}?ref={sha}')
+            result, err = _gh_api('GET', f'/repos/{gh.repo}/contents/{urllib.parse.quote(path.lstrip("/"), safe="/")}?ref={urllib.parse.quote(sha, safe="")}')
             if err:
                 self._json({'error': err}); return
             raw_bytes = base64.b64decode(result['content'].replace('\n', ''))
@@ -1150,14 +1167,15 @@ class Handler(BaseHTTPRequestHandler):
             if not gh.token or not gh.repo or not gh.path:
                 self._json({'error': 'GitHub not configured'}); return
             clean_path = gh.path.lstrip('/')
+            quoted_path = urllib.parse.quote(clean_path, safe='/')
             existing, _ = _gh_api('GET',
-                f'/repos/{gh.repo}/contents/{clean_path}?ref={urllib.parse.quote(gh.branch)}')
+                f'/repos/{gh.repo}/contents/{quoted_path}?ref={urllib.parse.quote(gh.branch)}')
             file_sha = existing.get('sha') if isinstance(existing, dict) else None
             encoded  = base64.b64encode(body).decode('ascii')
             payload  = {'message': message, 'content': encoded, 'branch': gh.branch}
             if file_sha:
                 payload['sha'] = file_sha
-            result, err = _gh_api('PUT', f'/repos/{gh.repo}/contents/{clean_path}', payload)
+            result, err = _gh_api('PUT', f'/repos/{gh.repo}/contents/{quoted_path}', payload)
             if err:
                 self._json({'error': err})
             else:
@@ -1399,8 +1417,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({'error': 'GitHub not configured'}); return
             message    = data.get('message', 'Update file').strip() or 'Update file'
             clean_path = gh.path.lstrip('/')
+            quoted_path = urllib.parse.quote(clean_path, safe='/')
             existing, _ = _gh_api('GET',
-                f'/repos/{gh.repo}/contents/{clean_path}?ref={urllib.parse.quote(gh.branch)}')
+                f'/repos/{gh.repo}/contents/{quoted_path}?ref={urllib.parse.quote(gh.branch)}')
             file_sha = existing.get('sha') if isinstance(existing, dict) else None
             # Encode content (CSV only — xlsx is handled by /api/github/commit-xlsx)
             if state.filetype == 'xlsx':
@@ -1417,7 +1436,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = {'message': message, 'content': encoded, 'branch': gh.branch}
             if file_sha:
                 payload['sha'] = file_sha
-            result, err = _gh_api('PUT', f'/repos/{gh.repo}/contents/{clean_path}', payload)
+            result, err = _gh_api('PUT', f'/repos/{gh.repo}/contents/{quoted_path}', payload)
             if err:
                 self._json({'error': err})
             else:

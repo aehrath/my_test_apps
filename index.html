@@ -2961,7 +2961,10 @@ function onCopy(e) {
 function onPaste(e) {
   const isEditingCell = document.activeElement?.tagName === 'INPUT'
     && !!document.activeElement.closest('#table-body');
-  if (isEditingCell || document.getElementById('modal-overlay')?.classList.contains('open')) return;
+  const _tag = document.activeElement?.tagName;
+  const isTypingElsewhere = (_tag === 'INPUT' || _tag === 'TEXTAREA' || document.activeElement?.isContentEditable)
+    && !document.activeElement.closest('#table-body');
+  if (isEditingCell || isTypingElsewhere || document.getElementById('modal-overlay')?.classList.contains('open')) return;
   const text = e.clipboardData?.getData('text/plain') ?? '';
   const grid = parseClipboardGrid(text);
   if (!grid.length) return;
@@ -4634,6 +4637,14 @@ async function switchSheet(idx) {
   setBaseline(S.headers, S.rows);
   resetColumnFilters();
   resetSelection(); clearSearch();
+  if (_inlineDiff) {
+    const data = await fetchVersionDataCached(_inlineDiff.sha);
+    if (!data.error) {
+      const { headers: commitH, rows: commitR } = _parseVersionData(data, currentSheetName(), _inlineDiff.sha);
+      const { mapping, ghostRows } = buildInlineDiffMapping(S.headers, S.rows, commitH, commitR);
+      _inlineDiff = { ..._inlineDiff, commitH, commitR, mapping, ghostRows };
+    }
+  }
   render();
   resetViewportToTop();
 }
